@@ -1,0 +1,4 @@
+requests>=2.31,<3
+playwright>=1.40
+akshare>=1.12
+adata>=2.0

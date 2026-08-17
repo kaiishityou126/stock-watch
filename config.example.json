@@ -1,0 +1,33 @@
+{
+  "bloggers": [
+    { "uid": "1234567890", "note": "微博:换成你要盯的博主 uid(weibo.com/u/<uid> 里的数字)" }
+  ],
+  "max_post_pages": 2000,
+  "max_comment_pages": 5,
+  "comment_refresh_days": 3,
+  "enable_full_text": true,
+  "comment_scope": "author_only",
+  "min_delay": 1.5,
+  "max_delay": 3.5,
+  "db_path": "data/app.db",
+  "profile_dir": ".wb_profile",
+
+  "auth_fail_breaker": 3,
+
+  "xueqiu_bloggers": [
+    { "user_id": "1234567", "note": "一期已停用(按博主抓取);保留供未来三期大V策略提炼" }
+  ],
+  "xq_profile_dir": ".xq_profile",
+  "xq_hot_rank_size": 100,
+  "xq_hot_rank_market": "沪深",
+  "xq_livenews_max_pages": 5,
+  "xq_max_pages": 200,
+  "xq_max_comment_pages": 5,
+  "xq_comment_scope": "author_only",
+
+  "market": {
+    "top_n": 40
+  },
+
+  "log_dir": "logs"
+}

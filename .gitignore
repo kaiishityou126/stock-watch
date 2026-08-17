@@ -1,0 +1,18 @@
+# 抓取产物 & 数据库(含他人评论/个人信息,勿提交)
+data/
+# 登录态(等于账号凭证,绝不能提交)
+.wb_profile/
+.wb_cookie*
+.xq_profile/
+# 本地配置(uid 等)
+config.json
+# 运行日志与熔断 flag(可能含敏感上下文)
+logs/
+# 环境
+__pycache__/
+*.pyc
+.venv/
+venv/
+# 离线安装包(二进制,几百 MB;download.py 脚本本身要提交)
+offline_packages/*
+!offline_packages/download.py

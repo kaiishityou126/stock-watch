@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python -m market snapshot --date 20260729)",
+      "Bash(python *)",
+      "WebFetch(domain:data.10jqka.com.cn)",
+      "Bash(hermes --version)",
+      "Bash(hermes --help)",
+      "Bash(where hermes *)",
+      "Bash(hermes cron *)",
+      "Bash(hermes gateway *)"
+    ]
+  }
+}
