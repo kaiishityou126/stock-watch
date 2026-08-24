@@ -23,6 +23,7 @@ from datetime import datetime
 from common import obs
 from . import login as login_mod
 from common.errors import AuthError
+from common.stdio import force_utf8_stdio
 from weibo.cli import load_config
 from .crawler import (
     XueqiuClient,
@@ -194,11 +195,14 @@ def cmd_crawl(args: argparse.Namespace) -> None:
     store = XueqiuStorage(cfg["db_path"])
     client = _make_client(cfg, need_login=False)  # 一期热榜/7x24 皆公开数据,走匿名免登录
 
-    threshold = int(cfg["auth_fail_breaker"])
+    # 本轮只有两条抓取腿,阈值若大于腿数则永远到不了;有效阈值封顶为腿数,
+    # 即"本轮全部腿都登录失效"就熔断(微博模块逐 uid 循环不受此限)
+    LEGS = (("热股榜", _crawl_hot_rank), ("7x24 快讯", _crawl_livenews))
+    threshold = min(int(cfg["auth_fail_breaker"]), len(LEGS))
     consecutive_auth_fail = 0
     hot_n = news_n = 0
 
-    for label, fn in (("热股榜", _crawl_hot_rank), ("7x24 快讯", _crawl_livenews)):
+    for label, fn in LEGS:
         try:
             n = fn(client, store, cfg)
             consecutive_auth_fail = 0
@@ -235,6 +239,7 @@ def cmd_login(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    force_utf8_stdio()
     ap = argparse.ArgumentParser(prog="python -m xueqiu", description="雪球单/多博主博文+评论抓取(自用)")
     ap.add_argument("--config", default="config.json")
     sub = ap.add_subparsers(dest="command", required=True)

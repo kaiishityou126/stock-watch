@@ -130,7 +130,9 @@ class MarketStorage:
                 "ON CONFLICT(trade_date) DO UPDATE SET up_count=excluded.up_count, "
                 "down_count=excluded.down_count, limit_up_count=excluded.limit_up_count, "
                 "limit_down_count=excluded.limit_down_count, up_down_ratio=excluded.up_down_ratio, "
-                "total_turnover=excluded.total_turnover, margin_balance=excluded.margin_balance, "
+                # 慢/易缺字段:新值为 NULL 时保留库中已有值,不让补抓冲掉
+                "total_turnover=COALESCE(excluded.total_turnover, market_sentiment.total_turnover), "
+                "margin_balance=COALESCE(excluded.margin_balance, market_sentiment.margin_balance), "
                 "fetched_at=excluded.fetched_at",
                 row,
             )

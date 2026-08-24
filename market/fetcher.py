@@ -27,7 +27,9 @@ def _send_skip_verify(self, request, **kwargs):
 
 _requests.Session.send = _send_skip_verify  # type: ignore[assignment]
 
-from datetime import datetime, timezone
+import math
+import re
+from datetime import datetime, timedelta, timezone
 
 
 class MarketError(RuntimeError):
@@ -80,11 +82,11 @@ def fetch_sector_fund_flow(trade_date: str, ak=None, sector_type: str = "行业�
     out: list[dict] = []
     for r in recs:
         _require(r, ["名称", "今日涨跌幅"], "板块资金流")
-        super_large = _pick(r, ["今日超大单净流入-净额"])
-        large = _pick(r, ["今日大单净流入-净额"])
-        medium = _pick(r, ["今日中单净流入-净额"])
-        small = _pick(r, ["今日小单净流入-净额"])
-        merged_main = _pick(r, ["今日主力净流入-净额"])
+        super_large = _to_float(_pick(r, ["今日超大单净流入-净额"]))
+        large = _to_float(_pick(r, ["今日大单净流入-净额"]))
+        medium = _to_float(_pick(r, ["今日中单净流入-净额"]))
+        small = _to_float(_pick(r, ["今日小单净流入-净额"]))
+        merged_main = _to_float(_pick(r, ["今日主力净流入-净额"]))
         if super_large is not None and large is not None:
             main_est = (super_large or 0) + (large or 0)
         else:
@@ -96,7 +98,7 @@ def fetch_sector_fund_flow(trade_date: str, ak=None, sector_type: str = "行业�
             "trade_date": trade_date,
             "sector": r["名称"],
             "sector_type": label,
-            "pct_change": r["今日涨跌幅"],
+            "pct_change": _to_float(r["今日涨跌幅"]),
             "turnover": None,
             "volume": None,
             "super_large_net": super_large,
@@ -117,8 +119,8 @@ def _fetch_industry_ths(trade_date: str, ak) -> list[dict]:
     东财 push2his 域名被限流时用此兜底。同花顺返回 90 个申万一级行业,单位:亿。
     缺四级净额拆分,无概念板块数据。
 
-    DataFrame 列位(按位置取,避免字符串编码差异):
-      [0]序号 [1]板块 [2]涨跌幅 [3]总成交额 [4]总成交量 [5]主力净流入
+    DataFrame 列位(按位置取,避免字符串编码差异;列序以 akshare 实测为准):
+      [0]序号 [1]板块 [2]涨跌幅 [3]总成交量(万手) [4]总成交额(亿) [5]净流入(亿)
       [6]上涨家数 [7]下跌家数 [8]均价 [9]领涨股 [10]领涨股-最新价 [11]领涨股-涨跌幅
     """
     df = ak.stock_board_industry_summary_ths()
@@ -126,17 +128,17 @@ def _fetch_industry_ths(trade_date: str, ak) -> list[dict]:
     out: list[dict] = []
     for r in recs:
         vals = list(r.values())
-        # 按位置取,THS 单位是「亿」→ 转为元保持与东财一致
+        # 按位置取;总成交额「亿」→ 元、总成交量「万手」→ 手,与东财口径一致
         def _val(idx):
             v = vals[idx] if idx < len(vals) else None
-            return float(v) if isinstance(v, (int, float)) else None
+            return _to_float(v) if isinstance(v, (int, float)) else None
         out.append({
             "trade_date": trade_date,
             "sector": vals[1] if len(vals) > 1 else None,
             "sector_type": "行业",
             "pct_change": _val(2),
-            "turnover": (_val(3) * 1e8) if _val(3) is not None else None,
-            "volume": (_val(4) * 1e8) if _val(4) is not None else None,
+            "turnover": (_val(4) * 1e8) if _val(4) is not None else None,
+            "volume": (_val(3) * 1e4) if _val(3) is not None else None,
             "super_large_net": None,    # 同花顺不拆四级
             "large_net": None,
             "medium_net": None,
@@ -220,6 +222,11 @@ def fetch_all_sectors(trade_date: str, ak=None) -> list[dict]:
         except Exception:  # noqa: BLE001
             pass
 
+    if not out:
+        # 四条路径全失败还静默返回空,cli 会当"成功入库 0 条"记 INFO,
+        # cron 绿灯零数据监控发现不了 → 抛错走 cli 的 ERROR + exit 1
+        raise MarketError(
+            f"{trade_date} 板块快照:同花顺/东财四条抓取路径全部失败(行业×2 + 概念×2)")
     return out
 
 
@@ -405,6 +412,27 @@ def _qt_raw(code: str, timeout: int = 10) -> str | None:
     return None
 
 
+def _qt_raw_multi(codes: list[str], timeout: int = 10) -> dict[str, str]:
+    """一次请求多码 qt 行情(qt.gtimg.cn 支持逗号分隔),返回 {code: raw}。
+
+    比逐码串行省 2 个往返;整包一个响应,回填天然全有或全无,
+    不会出现"某指数单腿超时 → 半边成交额"这种部分结果。
+    """
+    if not codes:
+        return {}
+    import requests as _r
+    try:
+        resp = _r.get(f"http://qt.gtimg.cn/q={','.join(codes)}", timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return {}
+    if resp.status_code != 200:
+        return {}
+    out: dict[str, str] = {}
+    for m in re.finditer(r'v_(\w+)="([^"]*)"', resp.text):
+        out[m.group(1)] = m.group(0)
+    return out
+
+
 def _parse_qt(raw: str) -> dict | None:
     """解析腾讯 qt 行情行 'v_CODE="field1~field2~..."' → dict。失败返回 None。"""
     try:
@@ -414,18 +442,25 @@ def _parse_qt(raw: str) -> dict | None:
     parts = inner.split("~")
     if len(parts) < 33:
         return None
-    return {
+    d = {
         "close": _to_float(parts[3]),
         "pct_change": _to_float(parts[32]),
         "fetched_at": _now_iso(),
     }
+    if len(parts) > 37:
+        # A 股指数行才有意义:成交额(万元);海外行该位常为空,解析失败不影响其余字段
+        d["turnover"] = _to_float(parts[37])
+    return d
 
 
 def _to_float(v):
+    """str/num → float;无效值归 None。pandas 缺格给的是 NaN 而非 None,
+    不拦住会绕过所有 `is not None` 判断,把可用的合并口径值也顶掉。"""
     try:
-        return float(v)
+        f = float(v)
     except (TypeError, ValueError):
         return None
+    return None if math.isnan(f) else f
 
 
 def fetch_index(trade_date: str, ak=None) -> list[dict]:
@@ -463,10 +498,23 @@ def fetch_index(trade_date: str, ak=None) -> list[dict]:
             "trade_date": trade_date, "index_code": icode, "index_name": iname,
             "close": last.get("close"),
             "pct_change": pct_change,
-            "turnover": last.get("amount"),   # 腾讯字段名 amount=成交额
-            "volume": last.get("volume"),
+            # akshare 把腾讯日线第 6 列命名为 amount,实为成交量(手);该接口无成交额
+            # 列,turnover 由下方 qt 实时行情回填,回填失败保持 None 不编造
+            "turnover": None,
+            "volume": last.get("amount"),
             "source": "akshare-tx", "fetched_at": _now_iso(),
         })
+
+    # A 股成交额回填:qt 实时行情第 [37] 字段 = 成交额(万元),已实测验证;
+    # 三指数一次批量请求,整包失败则全部保持 None(不产半边成交额)
+    tx_rows = _qt_raw_multi([r["index_code"] for r in out if r["source"] == "akshare-tx"])
+    for r in out:
+        if r["source"] != "akshare-tx":
+            continue
+        raw = tx_rows.get(r["index_code"])
+        d = _parse_qt(raw) if raw else None
+        if d and d.get("turnover") is not None:
+            r["turnover"] = d["turnover"] * 1e4  # 万元 → 元
 
     # 海外:腾讯 qt 实时行情(恒生/道琼斯/纳斯达克/标普)
     for qt_code, int_code, int_name in OVERSEAS_QT:
@@ -518,35 +566,58 @@ def _legu_to_dict(recs: list[dict]) -> dict:
 
 
 def _to_int(v):
+    f = _to_float(v)
+    return int(f) if f is not None else None
+
+
+def _margin_balance(ak, trade_date: str) -> float | None:
+    """两融余额 = 沪 + 深 最新可得一日融资融券余额(T+1 披露)。
+
+    akshare 两接口不传参时查的是写死的过期默认日期(SSE 默认止于 20230922,
+    SZSE 固定单日 20240411),必须显式传。从 trade_date 往前回探:沪支持区间一次
+    取全(SSE 返回顺序不保证,须按日期列排序后取最新),深只能单日逐日试;
+    窗口放宽到 30 天以覆盖春节/国庆等长休市。沪深两腿都拿到才出数——
+    只有一腿的"半边和"会被 upsert 的 COALESCE 固化,宁 None 留给下次补齐。
+    """
     try:
-        return int(float(v))
-    except (TypeError, ValueError):
+        end = datetime.strptime(trade_date, "%Y%m%d").date()
+    except ValueError:
         return None
+    start = end - timedelta(days=30)
 
+    def _val(recs: list[dict], latest: bool) -> float | None:
+        row = recs[-1] if latest else recs[0]
+        return _to_float(_pick(row, ["融资融券余额", "融资融券余额(元)"]))
 
-def _margin_balance(ak) -> float | None:
-    """两融余额 = 沪 + 深 最新一日融资融券余额(T+1 慢数据),best-effort 缺则 None。"""
-    total = 0.0
-    got = False
-    for fn_name in ("stock_margin_sse", "stock_margin_szse"):
-        fn = getattr(ak, fn_name, None)
-        if fn is None:
-            continue
+    sse_val = sz_val = None
+
+    sse = getattr(ak, "stock_margin_sse", None)
+    if sse is not None:
         try:
-            recs = _records(fn())
+            recs = _records(sse(start_date=start.strftime("%Y%m%d"),
+                                end_date=end.strftime("%Y%m%d")))
         except Exception:  # noqa: BLE001
-            continue
-        if not recs:
-            continue
-        last = recs[-1]
-        val = _pick(last, ["融资融券余额", "融资融券余额(元)"])
-        if val is not None:
+            recs = []
+        if recs:
+            # SSE 不保证行序(实测最新在前),按日期列排序后再取最新一行
+            recs.sort(key=lambda r: str(_pick(r, ["信用交易日期"]) or ""))
+            sse_val = _val(recs, latest=True)
+
+    szse = getattr(ak, "stock_margin_szse", None)
+    if szse is not None and sz_val is None:
+        for back in range(15):
+            day = end - timedelta(days=back)
             try:
-                total += float(val)
-                got = True
-            except (TypeError, ValueError):
-                pass
-    return total if got else None
+                recs = _records(szse(date=day.strftime("%Y%m%d")))
+            except Exception:  # noqa: BLE001
+                recs = []
+            if recs:
+                sz_val = _val(recs, latest=False)
+                break
+
+    if sse_val is None or sz_val is None:
+        return None
+    return sse_val + sz_val
 
 
 def fetch_sentiment(trade_date: str, ak=None) -> dict:
@@ -571,7 +642,7 @@ def fetch_sentiment(trade_date: str, ak=None) -> dict:
         "limit_down_count": limit_down,
         "up_down_ratio": ratio,
         "total_turnover": None,
-        "margin_balance": _margin_balance(ak),
+        "margin_balance": _margin_balance(ak, trade_date),
         "fetched_at": _now_iso(),
     }
 

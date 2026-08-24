@@ -31,6 +31,8 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
+from common.stdio import force_utf8_stdio
+
 # 库路径缺省链:--db 未指定 → 读 config.json 的 db_path → 再缺省回退 data/app.db。
 # reader 只读,不校验 config 的博主列表(那是抓取侧的职责)。
 _DEFAULT_DB = "data/app.db"
@@ -149,8 +151,11 @@ def resolve_date(symbol: str) -> dt.date:
         return today - dt.timedelta(days=(today.weekday() - wd) % 7 + 7)
     m = re.fullmatch(r"this-(mon|tue|wed|thu|fri|sat|sun)", symbol)
     if m:
+        # 本周真实日历日(未到就是未来日期)。不能往回取整——周三问 this-fri
+        # 回退上周五会让 LLM 把上周数据当本周五答;未来日期无数据由 main 报错兜住
         wd = _WEEKDAYS[m.group(1)]
-        return today - dt.timedelta(days=(today.weekday() - wd) % 7)
+        monday = today - dt.timedelta(days=today.weekday())
+        return monday + dt.timedelta(days=wd)
     if re.fullmatch(r"\d{8}", symbol):
         return dt.datetime.strptime(symbol, "%Y%m%d").date()
     raise ValueError(f"无法识别的日期符号: {symbol}。可用 today / yesterday / N-days-ago / last-tue / this-mon / YYYYMMDD")
@@ -168,6 +173,7 @@ def collect(
     指定 groups 时只读列出的块,返回键与 groups 对应,并始终带 date。
     """
     cutoff = time.time() - lookback_hours * 3600
+    named_date = trade_date is not None  # 点名日期时快讯按该自然日过滤,不用最近窗口冒充
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -225,7 +231,8 @@ def collect(
                 (trade_date,),
             )
         if has("hot_rank"):
-            # 热股榜:取库里 date<=trade_date 的倒数两个有数据日期(今日 + 前一有数据日),供算环比
+            # 热股榜:取库里 date<=trade_date 的倒数两个有数据日期(今日 + 前一有数据日),供算环比;
+            # 行内带 date(实际归档日),点名日期无归档回退到更早日期时下游可如实标注
             hot_dates = _rows(
                 conn,
                 "SELECT DISTINCT date FROM xq_hot_rank WHERE date <= ? ORDER BY date DESC LIMIT 2",
@@ -233,18 +240,31 @@ def collect(
             )
             dates = [r["date"] for r in hot_dates]
             hot_sql = (
-                "SELECT symbol, name, rank, hot_value, market_type FROM xq_hot_rank "
+                "SELECT symbol, name, rank, hot_value, market_type, date FROM xq_hot_rank "
                 "WHERE date = ? ORDER BY rank"
             )
             result["xq_hot_rank_today"] = _rows(conn, hot_sql, (dates[0],)) if len(dates) >= 1 else []
             result["xq_hot_rank_prev"] = _rows(conn, hot_sql, (dates[1],)) if len(dates) >= 2 else []
         if has("livenews"):
-            result["xq_livenews"] = _rows(
-                conn,
-                "SELECT id, created_ts, created_at, text FROM xq_livenews WHERE created_ts >= ? "
-                "ORDER BY created_ts DESC",
-                (cutoff,),
-            )
+            if named_date and trade_date:
+                # 点名历史日期:只出该自然日(北京时)归档的快讯;没有就是没有,
+                # 不拿"最近 24h"的内容贴那天的标签(否则 LLM 会把今天新闻说成历史日期的)
+                day0 = dt.datetime.strptime(trade_date, "%Y%m%d").replace(
+                    tzinfo=dt.timezone(dt.timedelta(hours=8)))
+                start = int(day0.timestamp())
+                result["xq_livenews"] = _rows(
+                    conn,
+                    "SELECT id, created_ts, created_at, text FROM xq_livenews "
+                    "WHERE created_ts >= ? AND created_ts < ? ORDER BY created_ts DESC",
+                    (start, start + 86400),
+                )
+            else:
+                result["xq_livenews"] = _rows(
+                    conn,
+                    "SELECT id, created_ts, created_at, text FROM xq_livenews WHERE created_ts >= ? "
+                    "ORDER BY created_ts DESC",
+                    (cutoff,),
+                )
     finally:
         conn.close()
 
@@ -326,11 +346,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     db_path = args.db or _config_db_path(args.config) or _DEFAULT_DB
 
     # 强制 UTF-8:agent 的 terminal 工具按 UTF-8 读 stdout,不受控制台代码页影响
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8")
-        except (AttributeError, OSError):
-            pass
+    force_utf8_stdio()
 
     def fail(msg: str) -> int:
         print(json.dumps({"error": msg}, ensure_ascii=False))
@@ -349,7 +365,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             k, v = item.split(":", 1)
             if k not in VALID_GROUPS:
                 return fail(f"--size 指定了未知数据块: {k}")
-            size[k] = int(v)
+            try:
+                n = int(v)
+            except ValueError:
+                return fail(f"--size 条数应为整数,收到: {v!r}")
+            if n <= 0:
+                return fail(f"--size 条数应为正整数,收到: {v!r}")
+            size[k] = n
 
     resolved_str: Optional[str] = None
     if args.date is not None:
@@ -357,6 +379,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             resolved_str = resolve_date(args.date).strftime("%Y%m%d")
         except ValueError as e:
             return fail(str(e))
+        except OverflowError:
+            # N-days-ago 数字过大超出日期范围:报错而非 traceback(stdout 必须保持纯 JSON)
+            return fail(f"日期超出可表示范围: {args.date}")
+        if resolved_str > _today_str():
+            # 未来日期不可能有数据;不拦的话热榜回退/最近帖子会把它"填活",
+            # 绕过下面的无数据守卫,把旧数据贴上未来日期的标签
+            return fail(f"{resolved_str} 是未来日期,还没有数据")
 
     data = collect(db_path, lookback_hours=args.lookback, trade_date=resolved_str, groups=groups)
 

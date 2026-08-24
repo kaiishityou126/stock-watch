@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 
-from report.reader import _config_db_path, _stale_today, collect
+from report.reader import _config_db_path, _stale_today, collect, resolve_date
 
 
 def _today_str() -> str:
@@ -75,6 +75,11 @@ class TestReportReader(unittest.TestCase):
         c.execute("INSERT INTO xq_hot_rank VALUES('20260717','SZ300750','宁德',2,15.0,'沪深','now')")
         c.execute("INSERT INTO xq_livenews VALUES('n1',?, '', '宁德时代扩产', '{}', 'now')", (now,))
         c.execute("INSERT INTO xq_livenews VALUES('n2',?, '', '三天前旧闻', '{}', 'now')", (old,))
+        # 固定落在北京时 2026-07-16 当天的一条快讯,供"点名日期按自然日过滤"用例
+        ts0716 = int(dt.datetime(2026, 7, 16, 10, 0,
+                                 tzinfo=dt.timezone(dt.timedelta(hours=8))).timestamp())
+        c.execute("INSERT INTO xq_livenews VALUES('n3',?, '', '7月16日盘中快讯', '{}', 'now')",
+                  (ts0716,))
         c.commit()
         c.close()
 
@@ -95,7 +100,7 @@ class TestReportReader(unittest.TestCase):
         self.assertEqual(data["sentiment"]["up_count"], 3000)
         self.assertEqual(data["date"], "20260716")
 
-    def test_collect_reads_hot_rank_two_days_and_news(self):
+    def test_collect_reads_hot_rank_two_days(self):
         data = collect(self.db, lookback_hours=24, trade_date="20260717")
         today = {r["symbol"]: r["rank"] for r in data["xq_hot_rank_today"]}
         prev = {r["symbol"]: r["rank"] for r in data["xq_hot_rank_prev"]}
@@ -103,9 +108,50 @@ class TestReportReader(unittest.TestCase):
         self.assertEqual(today["SZ300750"], 2)
         self.assertEqual(prev["SH600000"], 3)          # 前一日
         self.assertNotIn("SZ300750", prev)             # 前一日无宁德
-        news_texts = [n["text"] for n in data["xq_livenews"]]
-        self.assertIn("宁德时代扩产", news_texts)
-        self.assertNotIn("三天前旧闻", news_texts)      # 超 lookback
+        # 行内带实际归档日期,回退到更早日期时下游可如实标注
+        self.assertTrue(all(r["date"] == "20260717" for r in data["xq_hot_rank_today"]))
+        self.assertTrue(all(r["date"] == "20260716" for r in data["xq_hot_rank_prev"]))
+
+    def test_livenews_auto_uses_lookback_window(self):
+        # 自动路径(不传 --date):快讯仍按最近 lookback 小时窗口取
+        data = collect(self.db, lookback_hours=24, trade_date=None)
+        texts = [n["text"] for n in data["xq_livenews"]]
+        self.assertIn("宁德时代扩产", texts)
+        self.assertNotIn("三天前旧闻", texts)           # 超 lookback
+        self.assertNotIn("7月16日盘中快讯", texts)
+
+    def test_livenews_named_date_strict_day(self):
+        # 点名历史日期:只出该自然日(北京时)归档的快讯,宁空勿冒
+        data = collect(self.db, lookback_hours=24, trade_date="20260716")
+        texts = [n["text"] for n in data["xq_livenews"]]
+        self.assertEqual(texts, ["7月16日盘中快讯"])
+        data2 = collect(self.db, lookback_hours=24, trade_date="20260717")
+        self.assertEqual(data2["xq_livenews"], [])     # 该日无归档 → 空,不拿别的时间冒充
+
+    def test_resolve_date_this_week_real_calendar_day(self):
+        # this-X 解析为本周真实日历日:未到就是未来日期(由"无数据"报错兜住),
+        # 不再静默回退上周同星期冒充本周
+        today = dt.date.today()
+        monday = today - dt.timedelta(days=today.weekday())
+        self.assertEqual(resolve_date("this-mon"), monday)
+        self.assertEqual(resolve_date("this-fri"), monday + dt.timedelta(days=4))
+
+    def test_main_bad_args_output_json_not_traceback(self):
+        # stdout 必须保持纯 JSON 契约:非法 --size / 超大 N-days-ago 都输出 error 而非 traceback
+        from contextlib import redirect_stdout
+        import io
+        import json as _json
+        from report.reader import main
+        for argv in (["--size", "sectors:abc"],
+                     ["--size", "sectors:0"],
+                     ["--date", "99999999999999-days-ago"],
+                     ["--date", "29991231"]):  # 未来日期:防热榜回退/最近帖子把它"填活"
+            with self.subTest(argv=argv):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = main(argv + ["--db", self.db])
+                self.assertEqual(rc, 0)
+                self.assertIn("error", _json.loads(buf.getvalue()))
 
     def test_collect_tolerates_missing_tables(self):
         # 只用微博、从没跑过雪球/行情时,对应表不存在也不应崩,返回空
