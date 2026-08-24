@@ -13,6 +13,5 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-# 离线安装包(二进制,几百 MB;download.py 脚本本身要提交)
-offline_packages/*
-!offline_packages/download.py
+# 离线安装包(供无外网机器部署;只排除缓存)
+offline_packages/**/__pycache__/
