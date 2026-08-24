@@ -7,7 +7,7 @@
 - [weibo/login.py](weibo/login.py) — Playwright 扫码登录,登录态持久化到 `.wb_profile/`;抓取时 headless 复用该 profile 现取 cookie(自动保鲜)。`get_cookie_header()` 拼出 requests 用的 Cookie 头。
 - [weibo/crawler.py](weibo/crawler.py) — `requests` 直连微博**手机端 H5 接口**(`m.weibo.cn`,参照 MediaCrawler):博文列表 `getIndex`(containerid `107603<uid>`,`since_id` 游标翻页)、长文补全(`/detail/<mid>` 的 `$render_data`,带重试)、评论 `hotflow`。带重试/退避 + 被封刷 cookie + 登录预检(`/api/config`)+ 抓前 `prime_creator`(100505 容器)预热。`slim_post`/`slim_comment` 把 HTML 裁纯文本入库(保留 `raw_json`、转发原文、配图 URL);`select_comments` 按 `comment_scope` 过滤(默认 `author_only` 只留博主评论+其父评论)。
 - [weibo/storage.py](weibo/storage.py) — SQLite,三表 `posts`/`comments`/`crawl_state`。评论 `INSERT OR REPLACE` 去重;博文 `ON CONFLICT DO UPDATE`(保留 `comments_done` 断点)。`crawl_state` 存增量水位 `last_max_id` + 全量断点 `full_since_id`/`full_done`。
-- [weibo/cli.py](weibo/cli.py) — CLI 编排,`crawl_one()` 是核心抓取循环;博主列表与开关读 `config.json`。雪球包 [xueqiu/](xueqiu/) 结构镜像微博包;共享层在 [common/](common/)(errors + obs);行情层在 [market/](market/);数据读取在 [report/](report/)(reader + storage);告警在 [notify/](notify/)(alert)。LLM 简报生成与飞书推送由 Hermes 负责。
+- [weibo/cli.py](weibo/cli.py) — CLI 编排,`crawl_one()` 是核心抓取循环;博主列表与开关读 `config.json`。雪球包 [xueqiu/](xueqiu/) 结构镜像微博包;共享层在 [common/](common/)(errors + obs);行情层在 [market/](market/);数据读取在 [report/](report/)(reader + storage);告警在 [notify/](notify/)(alert)。LLM 简报生成与推送由 Hermes 负责。
 
 ## 行情层(market,自顶向下发现漏斗)
 

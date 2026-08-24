@@ -1,6 +1,6 @@
 # stock-watch
 
-自用的 **A 股舆情观察系统**:盯微博 / 雪球上的财经博主与散户讨论,结合当日大盘指数、市场情绪与板块资金流。定位**自用 / 研究**,数据管道由 Hermes 定时驱动,简报生成与飞书推送由 Hermes 负责。
+自用的 **A 股舆情观察系统**:盯微博 / 雪球上的财经博主与散户讨论,结合当日大盘指数、市场情绪与板块资金流。定位**自用 / 研究**,数据管道由 Hermes 定时驱动,简报生成与推送由 Hermes 负责。
 
 > ⚠️ 仅个人低频自用。抓取微博 / 雪球违反其用户协议;请勿高频、勿商业化分发、勿公开转发原文。评论含他人个人信息,注意保护;建议用小号登录。
 
@@ -68,7 +68,7 @@ playwright install chromium        # 首次装浏览器驱动(几百 MB,登录�
 }
 ```
 
-LLM 模型配置与飞书推送由 **Hermes** 统一管理(stock-watch 只负责数据抓取与存储),本项目无需额外配置。
+LLM 模型配置与推送由 **Hermes** 统一管理(推送渠道如个人微信 / 飞书,可随时切换;stock-watch 只负责数据抓取与存储),本项目无需额外配置。
 
 > `config.json` 含 uid,已在 `.gitignore`,勿提交;`config.example.json` 是不含隐私的模板。
 
@@ -94,7 +94,7 @@ python -m market snapshot                    # 盘后(交易日 15:30 后)拉大
 python -m notify alert                       # 扫日志 ERROR + 熔断 flag
 ```
 
-简报生成与飞书推送由 **Hermes agent** 负责(见 [hermes/SKILL.md](hermes/SKILL.md)),不在本项目中手动执行。
+简报生成与推送由 **Hermes agent** 负责(见 [hermes/skills/daily-stock-brief_skill.md](hermes/skills/daily-stock-brief_skill.md)),不在本项目中手动执行。
 
 - 登录态存在 `.wb_profile/` / `.xq_profile/`,抓取自动复用;cookie 失效会报「登录态失效」,重跑对应 `login` 扫一次即可。
 - 连续登录失效会**熔断**并写 `logs/weibo.paused` / `logs/xueqiu.paused`,人工处理后删掉该文件再跑。
@@ -121,7 +121,7 @@ python -m unittest discover -s tests
 
 - [AGENTS.md](AGENTS.md) —— 架构分层、各包内部原理(增量 / 断点续抓 / 字段裁剪)、微博接口陷阱与工程约定。
 - [hermes/README.md](hermes/README.md) —— 注册到 Hermes 的完整步骤(脚本 / cron / gateway / 时刻表)。
-- [hermes/SKILL.md](hermes/SKILL.md) —— Hermes agent 日常流水线蓝图(抓取→读数据→调 LLM→推飞书)。
+- [hermes/skills/daily-stock-brief_skill.md](hermes/skills/daily-stock-brief_skill.md) —— Hermes agent 日常流水线蓝图(抓取→读数据→调 LLM→推送到已配置渠道)。
 
 ## 合规提醒
 

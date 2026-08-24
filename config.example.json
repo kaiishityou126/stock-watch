@@ -10,6 +10,7 @@
   "min_delay": 1.5,
   "max_delay": 3.5,
   "db_path": "data/app.db",
+  "_comment_db_path": "SQLite 库文件路径。默认 data/app.db(仓库根下,首次部署最省事)。可改成任意位置,如 C:/Users/Administrator/app.db(推荐正斜杠,Windows 的 Path 也认)或 C:\\\\Users\\\\Administrator\\\\app.db(JSON 里反斜杠须双写)。改后抓取与 Hermes 简报都跟随此处;历史数据在原库,需自行迁移。",
   "profile_dir": ".wb_profile",
 
   "auth_fail_breaker": 3,

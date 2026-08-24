@@ -237,6 +237,21 @@ class TestMarketFetcher(unittest.TestCase):
         self.assertEqual(rows[0]["stock_code"], "000001")
         self.assertEqual(rows[0]["reason"], "日涨幅偏离值达7%")
 
+    def test_dragon_tiger_no_data_returns_empty(self):
+        # 无数据日期(盘前/休市/披露延迟)akshare 抛 TypeError → 空结果,不崩
+        class _AkNoData:
+            def stock_lhb_detail_em(self, start_date, end_date):
+                raise TypeError("'NoneType' object is not subscriptable")
+        self.assertEqual(fetcher.fetch_dragon_tiger("20260816", ak=_AkNoData()), [])
+
+    def test_dragon_tiger_real_failure_propagates(self):
+        # 真故障(网络/接口改版)仍抛出,由 cli 层记 ERROR,不能吞成空
+        class _AkDown:
+            def stock_lhb_detail_em(self, start_date, end_date):
+                raise ConnectionError("network down")
+        with self.assertRaises(ConnectionError):
+            fetcher.fetch_dragon_tiger("20260816", ak=_AkDown())
+
 
 if __name__ == "__main__":
     unittest.main()

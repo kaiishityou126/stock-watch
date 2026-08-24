@@ -14,13 +14,13 @@ description: 微博大 V 投资策略提炼：读取指定博主的博文 → �
 
 ## 前置
 
-确保已跑过微博全量 + 增量,博文已入库(`data/app.db` 的 `posts` 表)。
+确保已跑过微博全量 + 增量,博文已入库(库路径见 `config.json` 的 `db_path`,默认 `data/app.db`;数据在 `posts` 表)。
 
 ## 流程
 
 ### 1. 读取博文数据
 
-数据在 `data/app.db`。`posts` 表关键列:
+库路径见 `config.json` 的 `db_path`(默认 `data/app.db`)。`posts` 表关键列:
 
 - `uid` — 博主 uid（对应 `config.json` 的 `bloggers[].uid`）
 - `user_name` — 博主昵称

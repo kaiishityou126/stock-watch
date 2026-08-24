@@ -577,11 +577,19 @@ def fetch_sentiment(trade_date: str, ak=None) -> dict:
 
 
 def fetch_dragon_tiger(trade_date: str, ak=None) -> list[dict]:
-    """龙虎榜明细。inst_seat_count 需另接口拆解席位,一期先置 None(留二期补)。"""
+    """龙虎榜明细。inst_seat_count 需另接口拆解席位,一期先置 None(留二期补)。
+
+    无数据日期(盘前/休市/披露延迟)akshare 抛 TypeError/AttributeError,如
+    'NoneType' object is not subscriptable → 当空结果返回 [](预期无数据,cli 记 info);
+    网络/接口真故障(ConnectionError/KeyError 等)照抛,由 cli 记 ERROR。
+    """
     if ak is None:
         import akshare as ak  # noqa: PLC0415
     import json as _json
-    df = ak.stock_lhb_detail_em(start_date=trade_date, end_date=trade_date)
+    try:
+        df = ak.stock_lhb_detail_em(start_date=trade_date, end_date=trade_date)
+    except (TypeError, AttributeError):
+        return []
     recs = _records(df)
     out: list[dict] = []
     for r in recs:

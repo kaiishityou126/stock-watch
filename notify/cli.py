@@ -16,13 +16,17 @@ DEFAULT_MODULES = ["weibo", "xueqiu", "market"]
 
 
 def format_alert(issues: list[dict]) -> str | None:
-    """把 issue 列表组成告警文案;无 issue 返回 None。纯函数,便于测试。"""
+    """把 issue 列表组成告警文案;无 issue 返回 None。纯函数,便于测试。
+
+    错误行以两个空格开头:微信适配器把"行首缩进"当续行并入同一条消息,
+    多行告警也只发一条(一次接口调用),避免突发限流。
+    """
     if not issues:
         return None
     lines = []
     for i in issues:
         tag = "熔断" if i.get("kind") == "paused" else "错误"
-        lines.append(f"[{tag}] {i.get('module')} / {i.get('step')}: {i.get('message')}")
+        lines.append(f"  [{tag}] {i.get('module')} / {i.get('step')}: {i.get('message')}")
     return "本轮检测到以下问题:\n" + "\n".join(lines)
 
 
@@ -32,8 +36,7 @@ def cmd_alert(args) -> None:
     issues = obs.scan_issues(modules, log_dir=cfg["log_dir"], state_dir=cfg["log_dir"], flag_dir=cfg["log_dir"])
     text = format_alert(issues)
     if text is None:
-        print("无告警")
-        return
+        return  # 无告警 = 空 stdout = Hermes no-agent 静默,不投递
     print(text)  # 输出到 stdout,由 Hermes 负责投递
 
 

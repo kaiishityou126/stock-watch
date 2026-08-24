@@ -14,7 +14,7 @@
   [6] hermes gateway setup:没配则拉起向导(飞书/企业微信/钉钉/Telegram/Discord/Slack…)
   [7] weibo / xueqiu login:拉起,你扫码
   [8] 拷 hermes/scripts/*.py 到 Hermes 脚本目录
-  [9] 建 6 条 cron(已存在跳过)
+  [9] 装 skill 到 Hermes 技能目录 + 建 6 条 cron(已存在跳过)
   [10] hermes gateway install
   [11] 询问是否现在跑 weibo full 全量基线
   [12] 打印验证清单
@@ -94,6 +94,38 @@ def hermes_scripts_dir() -> Path:
         base = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
         return Path(base) / "hermes" / "scripts"
     return Path.home() / ".hermes" / "scripts"
+
+
+def hermes_skills_dir() -> Path:
+    if IS_WIN:
+        base = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+        return Path(base) / "hermes" / "skills"
+    return Path.home() / ".hermes" / "skills"
+
+
+# 本系统所有 skill 装到 Hermes 技能目录下的这个分类文件夹(纯组织用,不进技能名)。
+SKILL_CATEGORY = "stock-watch"
+
+
+def _skill_frontmatter_name(path: Path) -> str:
+    """读 skill 文件 frontmatter 的 name:,即 Hermes 技能名(装目录时用作目录名)。"""
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"^name:\s*(\S+)\s*$", text, re.MULTILINE)
+    if not m:
+        raise SystemExit(f"找不到 skill frontmatter name:{path}")
+    return m.group(1)
+
+
+def _install_skill(src: Path) -> str:
+    """把 skill 装进 Hermes 技能目录(<skills_dir>/<SKILL_CATEGORY>/<name>/SKILL.md),返回技能名。
+
+    Hermes 的 skill_view 只接受相对技能名、拒绝绝对路径;cron 任务 --skill 必须传技能名。
+    """
+    name = _skill_frontmatter_name(src)
+    dst_dir = hermes_skills_dir() / SKILL_CATEGORY / name
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst_dir / "SKILL.md")
+    return name
 
 
 # ── [0] Python 版本 ────────────────────────────────────────
@@ -406,12 +438,12 @@ def step_copy_scripts() -> None:
 CRON_JOBS = [
     ("stockwatch-weibo", "30 9,12,15,21 * * *", "script", "stockwatch_weibo.py"),
     ("stockwatch-xueqiu", "10 8,9,11,12,14,15,17,19,20,22 * * *", "script", "stockwatch_xueqiu.py"),
-    ("stockwatch-market", "35 15 * * 1-5", "script", "stockwatch_market.py"),
-    ("stockwatch-daily", "40 15 * * 1-5", "skill", "hermes/SKILL.md"),
-    ("stockwatch-blogger", "0 20 * * 5", "skill", "hermes/blogger-strategy.md"),
+    ("stockwatch-market", "0 18 * * 1-5", "script", "stockwatch_market.py"),
+    ("stockwatch-daily", "10 18 * * 1-5", "skill", "hermes/skills/daily-stock-brief_skill.md"),
+    ("stockwatch-blogger", "0 20 * * 5", "skill", "hermes/skills/blogger-strategy_skill.md"),
     ("stockwatch-alert", "55 8-22 * * *", "script", "stockwatch_alert.py"),
 ]
-DELIVER_FEISHU = {"stockwatch-daily", "stockwatch-blogger", "stockwatch-alert"}
+DELIVER_WEIXIN = {"stockwatch-daily", "stockwatch-blogger", "stockwatch-alert"}
 
 
 def _existing_cron_names() -> set[str]:
@@ -422,10 +454,13 @@ def _existing_cron_names() -> set[str]:
 
 
 def step_cron() -> None:
-    hr("[9] 创建 Hermes cron 任务(已存在跳过)")
+    hr("[9] 装 skill + 创建 Hermes cron 任务(已存在跳过,skill 每次覆盖重装)")
     existing = _existing_cron_names()
     workdir = str(REPO)
     for name, schedule, kind, target in CRON_JOBS:
+        # skill 每次覆盖重装:仓库里改了 skill,重跑 deploy 即同步到 Hermes,
+        # 不依赖对应 cron 是否已存在(cron 只决定要不要 create,不决定要不要装 skill)。
+        skill_name = _install_skill(REPO / target) if kind == "skill" else None
         if name in existing:
             say(f"⏭  {name} 已存在,跳过")
             continue
@@ -433,10 +468,10 @@ def step_cron() -> None:
         if kind == "script":
             cmd += ["--no-agent", "--script", target]
         else:
-            cmd += ["--skill", str(REPO / target)]
+            cmd += ["--skill", skill_name]
         cmd += ["--workdir", workdir]
-        if name in DELIVER_FEISHU:
-            cmd += ["--deliver", "feishu"]
+        if name in DELIVER_WEIXIN:
+            cmd += ["--deliver", "weixin"]
         cmd += ["--name", name]
         if run(cmd) != 0:
             say(f"⚠️  创建 {name} 失败,请稍后手动处理。")
@@ -472,7 +507,7 @@ def step_verify() -> None:
     say("请依次核对:")
     say("  1) hermes cron list                 确认 6 条已登记")
     say("  2) hermes cron run stockwatch-weibo  手动触发,看 data/app.db 有新数据")
-    say("  3) hermes cron run stockwatch-daily  手动触发,看飞书收到简报")
+    say("  3) hermes cron run stockwatch-daily  手动触发,看微信收到简报")
     say("\n之后到点自动跑,无需再管。祝顺利!")
 
 
