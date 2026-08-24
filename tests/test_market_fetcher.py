@@ -20,10 +20,11 @@ class _FakeDF:
 
 class _FakeAk:
     def stock_board_industry_summary_ths(self):
-        # 同花顺行业汇总(模拟):列名用中文,单位亿
+        # 同花顺行业汇总(模拟)。fetcher 按列位置取值([3]总成交量/万手 [4]总成交额/亿
+        # [5]净流入/亿),键序必须与真实接口列序一致,不能调换
         return _FakeDF([
             {"序号": 1, "板块": "半导体", "涨跌幅": 7.2,
-             "总成交额": 1694.82, "总成交量": 1379.52, "主力净流入": -34.29,
+             "总成交量": 1379.52, "总成交额": 1694.82, "主力净流入": -34.29,
              "上涨家数": 182, "下跌家数": 1, "均价": 81.4,
              "领涨股": "紫光国微", "领涨股-最新价": 82.14, "领涨股-涨跌幅": 20.0},
         ])
@@ -83,12 +84,17 @@ class _FakeAk:
             {"item": "真实跌停", "value": 6},
         ])
 
-    def stock_margin_sse(self):
-        return _FakeDF([{"信用交易日期": "20260715", "融资融券余额": 8.0e11},
-                        {"信用交易日期": "20260716", "融资融券余额": 8.2e11}])
+    def stock_margin_sse(self, start_date=None, end_date=None):
+        # 沪:区间查询。真实接口不保证行序(实测最新在前),故意按新→旧排,
+        # 实现必须按日期列排序后取最新——直接取末行会拿到旧的 8.0e11
+        return _FakeDF([{"信用交易日期": "20260716", "融资融券余额": 8.2e11},
+                        {"信用交易日期": "20260710", "融资融券余额": 8.0e11}])
 
-    def stock_margin_szse(self):
-        return _FakeDF([{"信用交易日期": "20260716", "融资融券余额": 7.8e11}])
+    def stock_margin_szse(self, date=None):
+        # 深:T+1 单日披露——trade_date 当日(20260716)未出 → 空;回探前一日命中
+        if date == "20260716":
+            return _FakeDF([])
+        return _FakeDF([{"信用交易日期": "20260715", "融资融券余额": 7.8e11}])
 
     def stock_lhb_detail_em(self, start_date, end_date):
         return _FakeDF([{
@@ -123,6 +129,39 @@ class TestMarketFetcher(unittest.TestCase):
         self.assertAlmostEqual(r["main_net_inflow_est"], 5.0e7)
         self.assertAlmostEqual(r["retail_net_inflow_est"], -3.0e7)
 
+    def test_fund_flow_nan_falls_back_to_merged(self):
+        # 超大/大单缺格时 pandas 给 NaN 而非 None:NaN 要归 None,
+        # 否则绕过判断把可用的合并主力净流入也顶掉
+        nan = float("nan")
+
+        class _AkNan:
+            def stock_sector_fund_flow_rank(self, indicator, sector_type):
+                return _FakeDF([{"名称": "半导体", "今日涨跌幅": 1.0,
+                                 "今日超大单净流入-净额": nan, "今日大单净流入-净额": nan,
+                                 "今日主力净流入-净额": 5.0e7,
+                                 "今日中单净流入-净额": nan, "今日小单净流入-净额": -1.0e7}])
+        r = fetcher.fetch_sector_fund_flow("20260716", ak=_AkNan())[0]
+        self.assertIsNone(fetcher._to_float(nan))
+        self.assertIsNone(r["super_large_net"])
+        self.assertIsNone(r["large_net"])
+        self.assertAlmostEqual(r["main_net_inflow_est"], 5.0e7)   # 回退合并列,不是 NaN
+        self.assertAlmostEqual(r["retail_net_inflow_est"], -1.0e7)
+
+    def test_all_sectors_all_paths_fail_raises(self):
+        # 同花顺+东财四条抓取路径全失败要抛错走 cli 的 ERROR,不能静默返回空当成功
+        class _AkDown:
+            def stock_board_industry_summary_ths(self):
+                raise ConnectionError("ths down")
+            def stock_sector_fund_flow_rank(self, indicator, sector_type):
+                raise ConnectionError("em down")
+        _orig_concept = fetcher._fetch_concept_ths
+        fetcher._fetch_concept_ths = lambda td: []  # type: ignore[attr-defined]
+        try:
+            with self.assertRaises(fetcher.MarketError):
+                fetcher.fetch_all_sectors("20260716", ak=_AkDown())
+        finally:
+            fetcher._fetch_concept_ths = _orig_concept  # type: ignore[attr-defined]
+
     def test_snapshot_merges_quote(self):
         rows = fetcher.fetch_snapshot("20260716", ak=_FakeAk(), sector_type="行业资金流")
         r = rows[0]
@@ -147,6 +186,7 @@ class TestMarketFetcher(unittest.TestCase):
         self.assertEqual(ind["sector"], "半导体")
         self.assertAlmostEqual(ind["pct_change"], 7.2)
         self.assertAlmostEqual(ind["turnover"], 1.69482e11)  # 1694.82 亿 → 元
+        self.assertAlmostEqual(ind["volume"], 1.37952e7)  # 1379.52 万手 → 手
         self.assertAlmostEqual(ind["main_net_inflow_est"], -3.429e9)  # -34.29 亿 → 元
         self.assertEqual(ind["source"], "akshare-ths")
         self.assertIsNone(ind["super_large_net"])  # THS 不拆四级
@@ -154,50 +194,68 @@ class TestMarketFetcher(unittest.TestCase):
         self.assertEqual(by_type["概念"]["sector"], "AI概念")
 
     def test_fetch_index(self):
-        # 注入假腾讯 qt 行情数据
+        # 注入假腾讯 qt 行情数据。按字段下标构造,与 _parse_qt 取位一一对应:
+        # [3]=最新价 [31]=涨跌额 [32]=涨跌幅% [37]=成交额/万元(A 股行才有意义);
+        # sz 两指数返回 None → 成交额回填优雅缺省保持 None
         _orig_qt_raw = fetcher._qt_raw
+        _orig_qt_multi = fetcher._qt_raw_multi
+
+        def _build(fields: dict[int, str], total: int) -> str:
+            parts = [""] * total
+            for i, v in fields.items():
+                parts[i] = v
+            return "~".join(parts)
+
+        data = {
+            "sh000001": 'v_sh000001="' + _build(
+                {0: "100", 1: "上证指数", 2: "000001", 3: "3105.0",
+                 30: "20260716150000", 31: "15.0", 32: "0.49",
+                 37: "52000000"}, 80) + '";',
+            "hkHSI": 'v_hkHSI="' + _build(
+                {0: "100", 1: "恒生指数", 2: "HSI", 3: "18000.0",
+                 31: "215.8", 32: "0.56"}, 78) + '";',
+            "usDJI": 'v_usDJI="' + _build(
+                {0: "200", 1: "道琼斯", 2: ".DJI", 3: "35000.0",
+                 31: "100.0", 32: "0.29"}, 71) + '";',
+            "usIXIC": 'v_usIXIC="' + _build(
+                {0: "200", 1: "纳斯达克", 2: ".IXIC", 3: "16000.0",
+                 31: "-50.0", 32: "-0.31"}, 71) + '";',
+            "usINX": 'v_usINX="' + _build(
+                {0: "200", 1: "标普500", 2: ".INX", 3: "4500.0",
+                 31: "10.0", 32: "0.22"}, 71) + '";',
+        }
 
         def _fake_qt(code: str, timeout: int = 10) -> str | None:
-            # 构造真实长度的腾讯 qt 行情数据(HK:78 fields, US:71 fields)
-            # 关键字段: [3]=close, [32]=pct_change
-            def _pad(n):
-                return "~".join(["0"] * n)
-            data = {
-                "hkHSI": (  # 78 fields
-                    "v_hkHSI=\"100~恒生指数~HSI~18000.0~17900.0~17950.0~"
-                    + _pad(24) + "~2026/07/16 16:00:00~100.0~0.56~"
-                    + _pad(45) + "\""),
-                "usDJI": (  # 71 fields
-                    "v_usDJI=\"200~道琼斯~.DJI~35000.0~34900.0~34950.0~"
-                    + _pad(24) + "~2026-07-15 16:00:00~100.0~0.29~"
-                    + _pad(38) + "\""),
-                "usIXIC": (  # 71 fields
-                    "v_usIXIC=\"200~纳斯达克~.IXIC~16000.0~16050.0~15950.0~"
-                    + _pad(24) + "~2026-07-15 16:00:00~-50.0~-0.31~"
-                    + _pad(38) + "\""),
-                "usINX": (  # 71 fields
-                    "v_usINX=\"200~标普500~.INX~4500.0~4490.0~4495.0~"
-                    + _pad(24) + "~2026-07-15 16:00:00~10.0~0.22~"
-                    + _pad(38) + "\""),
-            }
             return data.get(code)
+
+        def _fake_qt_multi(codes, timeout: int = 10):
+            return {c: data[c] for c in codes if c in data}
 
         try:
             fetcher._qt_raw = _fake_qt  # type: ignore[attr-defined]
+            fetcher._qt_raw_multi = _fake_qt_multi  # type: ignore[attr-defined]
             rows = fetcher.fetch_index("20260716", ak=_FakeAk())
+            # 整包回填失败 → A 股成交额全部保持 None(不产半边成交额)
+            fetcher._qt_raw_multi = lambda codes, timeout=10: {}  # type: ignore[attr-defined]
+            rows_no_qt = fetcher.fetch_index("20260716", ak=_FakeAk())
         finally:
             fetcher._qt_raw = _orig_qt_raw  # type: ignore[attr-defined]
+            fetcher._qt_raw_multi = _orig_qt_multi  # type: ignore[attr-defined]
 
         by_code = {r["index_code"]: r for r in rows}
-        # A 股三大指数(腾讯日线)
+        # A 股三大指数(腾讯日线;成交额由 qt 回填,sz 未命中回填为 None)
         self.assertIn("sh000001", by_code)
         sh = by_code["sh000001"]
         self.assertAlmostEqual(sh["close"], 3100.0)
         self.assertAlmostEqual(sh["pct_change"], 0.49)  # (3100-3085)/3085
-        self.assertAlmostEqual(sh["turnover"], 3.0e11)
+        self.assertAlmostEqual(sh["volume"], 3.0e11)  # 日线第 6 列实为成交量
+        self.assertAlmostEqual(sh["turnover"], 5.2e11)  # qt[37]=52000000 万 × 1e4
         self.assertEqual(sh["source"], "akshare-tx")
         self.assertIn("sz399006", by_code)
         self.assertIn("sz399001", by_code)
+        self.assertIsNone(by_code["sz399001"]["turnover"])
+        self.assertIsNone(
+            {r["index_code"]: r for r in rows_no_qt}["sh000001"]["turnover"])
         # 海外:腾讯 qt(恒生/道琼斯/纳斯达克/标普)
         self.assertIn("hk_hsi", by_code)
         self.assertAlmostEqual(by_code["hk_hsi"]["close"], 18000.0)
@@ -223,6 +281,14 @@ class TestMarketFetcher(unittest.TestCase):
         self.assertEqual(s["limit_down_count"], 6)
         self.assertAlmostEqual(s["up_down_ratio"], 2.0)
         self.assertAlmostEqual(s["margin_balance"], 8.2e11 + 7.8e11)  # 沪最新 + 深最新
+
+    def test_margin_requires_both_legs(self):
+        # 深腿拿不到时不出"沪-only 半边和"——那会被 upsert 的 COALESCE 固化成常驻错值
+        class _AkSzDown(_FakeAk):
+            def stock_margin_szse(self, date=None):
+                return _FakeDF([])
+        s = fetcher.fetch_sentiment("20260716", ak=_AkSzDown())
+        self.assertIsNone(s["margin_balance"])
 
     def test_quote_source_follows_sector_type(self):
         # 概念资金流应改用概念板块行情接口取成交额/量,而非行业接口

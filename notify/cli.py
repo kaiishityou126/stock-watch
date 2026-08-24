@@ -10,6 +10,7 @@ alert 用 obs.scan_issues 按级别字段判定,不靠中文正则;offset 防重
 from __future__ import annotations
 
 from common import obs
+from common.stdio import force_utf8_stdio
 from weibo.cli import load_config
 
 DEFAULT_MODULES = ["weibo", "xueqiu", "market"]
@@ -42,6 +43,9 @@ def cmd_alert(args) -> None:
 
 def main() -> None:
     import argparse
+
+    # 强制 UTF-8:Windows 管道下默认 GBK,Hermes 按 UTF-8 读 stdout 会拿到乱码
+    force_utf8_stdio()
 
     ap = argparse.ArgumentParser(prog="python -m notify", description="告警扫描(扫日志/flag,有问题输出到 stdout)")
     ap.add_argument("--config", default="config.json")

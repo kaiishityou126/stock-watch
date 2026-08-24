@@ -13,6 +13,7 @@ import logging
 from datetime import date
 
 from common import obs
+from common.stdio import force_utf8_stdio
 from weibo.cli import load_config
 from market.fetcher import (
     fetch_all_sectors,
@@ -28,17 +29,22 @@ SNAPSHOT_GROUPS = ("index", "sentiment", "sectors", "dragon")
 
 
 def _total_turnover(indexes: list[dict]) -> float | None:
-    """全市场成交额近似 = 上证综指(沪) + 深证成指(深)成交额(创业板指是深子集,不重复计)。"""
-    total = 0.0
-    got = False
+    """全市场成交额近似 = 上证综指(沪) + 深证成指(深)成交额(创业板指是深子集,不重复计)。
+
+    两腿必须齐才出数:缺一腿的"半边和"会被 upsert 的 COALESCE 固化成当日常驻值,
+    宁可 None 留给下次补齐。
+    """
+    vals: dict[str, float] = {}
     for r in indexes:
-        if r.get("index_code") in ("sh000001", "sz399001") and r.get("turnover") is not None:
+        code = r.get("index_code")
+        if code in ("sh000001", "sz399001") and r.get("turnover") is not None:
             try:
-                total += float(r["turnover"])
-                got = True
+                vals[code] = float(r["turnover"])
             except (TypeError, ValueError):
                 pass
-    return total if got else None
+    if "sh000001" not in vals or "sz399001" not in vals:
+        return None
+    return vals["sh000001"] + vals["sz399001"]
 
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
@@ -120,6 +126,8 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # skill 的按需补拉经 Hermes 终端工具读输出,强制 UTF-8 防控制台 GBK 乱码
+    force_utf8_stdio()
     ap = argparse.ArgumentParser(
         prog="python -m market", description="A 股大盘/情绪/板块资金流/龙虎榜快照(自用)")
     ap.add_argument("--config", default="config.json")

@@ -26,6 +26,7 @@ from .crawler import (
     slim_post,
 )
 from common.errors import AuthError
+from common.stdio import force_utf8_stdio
 from .storage import Storage
 
 DEFAULTS = {
@@ -151,6 +152,8 @@ def crawl_one(
     for pid in target_ids:
         try:
             top = client.fetch_comments(pid, cfg["max_comment_pages"])
+        except AuthError:
+            raise  # 登录失效要交给外层熔断计数,当单篇失败吞掉会静默丢光当天评论
         except RuntimeError as e:
             print(f"[warn] uid={uid} 博文 {pid} 评论失败:{e}", file=sys.stderr)
             continue
@@ -224,6 +227,7 @@ def cmd_login(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    force_utf8_stdio()
     ap = argparse.ArgumentParser(prog="python -m weibo", description="微博单/多博主博文+评论抓取(自用)")
     ap.add_argument("--config", default="config.json", help="配置文件(默认 config.json)")
     sub = ap.add_subparsers(dest="command", required=True)
