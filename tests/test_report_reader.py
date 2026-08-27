@@ -39,7 +39,8 @@ class TestReportReader(unittest.TestCase):
         old = now - 3 * 86400
         c = sqlite3.connect(self.db)
         c.executescript(
-            "CREATE TABLE posts(id TEXT PRIMARY KEY, uid TEXT, user_name TEXT, created_ts INTEGER, text TEXT);"
+            "CREATE TABLE posts(id TEXT PRIMARY KEY, uid TEXT, user_name TEXT, created_ts INTEGER, "
+            "text TEXT, reposts_count INTEGER, comments_count INTEGER, attitudes_count INTEGER);"
             "CREATE TABLE xq_posts(id TEXT PRIMARY KEY, user_id TEXT, user_name TEXT, created_ts INTEGER, text TEXT);"
             "CREATE TABLE market_snapshot(trade_date TEXT, sector TEXT, sector_type TEXT DEFAULT '行业', "
             "pct_change REAL, turnover REAL, volume REAL, super_large_net REAL, large_net REAL, "
@@ -55,8 +56,15 @@ class TestReportReader(unittest.TestCase):
             "net_buy REAL, buy_amount REAL, sell_amount REAL, inst_seat_count INTEGER, raw_json TEXT, "
             "fetched_at TEXT, PRIMARY KEY(trade_date,stock_code,reason));"
         )
-        c.execute("INSERT INTO posts VALUES('1','u','大V',?, '看多半导体')", (now,))
-        c.execute("INSERT INTO posts VALUES('2','u','大V',?, '这是三天前')", (old,))
+        c.execute(
+            "INSERT INTO posts(id, uid, user_name, created_ts, text, reposts_count, comments_count,"
+            " attitudes_count) VALUES('1','u','大V',?, '看多半导体',5,10,20)",
+            (now,),
+        )
+        c.execute(
+            "INSERT INTO posts(id, uid, user_name, created_ts, text) VALUES('2','u','大V',?, '这是三天前')",
+            (old,),
+        )
         c.execute("INSERT INTO xq_posts VALUES('9','x','雪球客',?, '新能源要涨')", (now,))
         c.execute("INSERT INTO market_snapshot(trade_date,sector,sector_type,pct_change,turnover,"
                   "volume,main_net_inflow_est,retail_net_inflow_est,source,fetched_at) "
@@ -290,6 +298,67 @@ class TestReportReader(unittest.TestCase):
         data = collect(db, lookback_hours=24, trade_date=_today_str(), groups=["index"])
         self.assertFalse(data["is_close_data"])
         self.assertNotIn("fetched_at_bj", data)
+
+    def test_collect_weibo_posts_per_uid_limit(self):
+        # 博主博文块:per-uid 各取最新 N 条、组内时间倒序、过滤空文本;post_uids 缺省时空列表不崩
+        c = sqlite3.connect(self.db)
+        now = int(time.time())
+        for i in range(3):
+            c.execute(
+                "INSERT INTO posts(id, uid, user_name, created_ts, text, reposts_count,"
+                " comments_count, attitudes_count) VALUES(?,?,?,?,?,?,?,?)",
+                (f"a{i}", "ua", "博主A", now - i * 60, f"A的第{i}条", 1, 2, 3),
+            )
+        for i in range(2):
+            c.execute(
+                "INSERT INTO posts(id, uid, user_name, created_ts, text) VALUES(?,?,?,?,?)",
+                (f"b{i}", "ub", "博主B", now - i * 60 - 10, f"B的第{i}条"),
+            )
+        c.execute(
+            "INSERT INTO posts(id, uid, user_name, created_ts, text) VALUES('x','ua','博主A',?, '')",
+            (now + 60,),
+        )  # 最新但空文本 → 应被过滤,不让它占 limit 名额
+        c.commit()
+        c.close()
+
+        data = collect(self.db, lookback_hours=24, trade_date="20260716",
+                       groups=["weibo_posts"], post_uids=["ua", "ub"], post_limit=2)
+        rows = data["weibo_posts"]
+        self.assertEqual([r["text"] for r in rows if r["uid"] == "ua"], ["A的第0条", "A的第1条"])
+        self.assertEqual([r["text"] for r in rows if r["uid"] == "ub"], ["B的第0条", "B的第1条"])
+        top = next(r for r in rows if r["uid"] == "ua")
+        self.assertEqual(top["reposts_count"], 1)
+        self.assertIn("created_bj", top)
+
+        empty = collect(self.db, lookback_hours=24, trade_date="20260716", groups=["weibo_posts"])
+        self.assertEqual(empty["weibo_posts"], [])
+
+    def test_main_weibo_posts_requires_bloggers(self):
+        # CLI 层契约:请求 weibo_posts 但 config 读不到 bloggers → 纯 JSON error、exit 0
+        import contextlib
+        import io
+        import json as _json
+
+        from report import reader as reader_mod
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = reader_mod.main(["--db", self.db, "--groups", "weibo_posts",
+                                  "--config", str(Path(self.tmp.name) / "nope.json")])
+        self.assertEqual(rc, 0)
+        out = _json.loads(buf.getvalue())
+        self.assertIn("bloggers", out["error"])
+
+    def test_config_bloggers_reads_uids_dedup_and_strip(self):
+        from report.reader import _config_bloggers
+
+        cfg = str(Path(self.tmp.name) / "cfg_b.json")
+        Path(cfg).write_text(
+            '{"bloggers": [{"uid": " 111 "}, {"uid": "111"}, {"uid": "222"}, {"note": "无uid跳过"}]}',
+            encoding="utf-8",
+        )
+        self.assertEqual(_config_bloggers(cfg), ["111", "222"])  # strip + 去重保序
+        self.assertEqual(_config_bloggers(str(Path(self.tmp.name) / "nope.json")), [])
 
 
 if __name__ == "__main__":

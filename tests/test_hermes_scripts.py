@@ -23,7 +23,8 @@ def _load(name: str) -> ModuleType:
 
 
 class TestHermesScripts(unittest.TestCase):
-    def _assert_script(self, name: str, expected_tail: list[str]) -> None:
+    def _assert_cmd_script(self, name: str, expected_tail: list[str]) -> None:
+        """直跑版(sys.executable + CMD)。"""
         mod = _load(name)
         self.assertEqual(mod.CMD[1:], expected_tail)
         with mock.patch.object(mod.subprocess, "run") as run:
@@ -31,17 +32,30 @@ class TestHermesScripts(unittest.TestCase):
             self.assertEqual(mod.main(), 7)
             run.assert_called_once_with(mod.CMD)
 
+    def _assert_probe_script(self, name: str, probe_module: str, expected_tail: list[str]) -> None:
+        """解释器探测版(_pick_python 选到装了依赖包的解释器再跑,Hermes venv 常缺包)。"""
+        mod = _load(name)
+        self.assertEqual(mod.PROBE_MODULE, probe_module)
+        with mock.patch.object(mod, "_pick_python", return_value="fake-py"), mock.patch.object(
+            mod.subprocess, "run"
+        ) as run:
+            run.return_value = mock.Mock(returncode=7)
+            self.assertEqual(mod.main(), 7)
+            run.assert_called_once_with(["fake-py"] + expected_tail)
+
     def test_weibo(self):
-        self._assert_script("stockwatch_weibo", ["-m", "weibo", "crawl", "--mode", "incremental"])
+        self._assert_probe_script(
+            "stockwatch_weibo", "playwright", ["-m", "weibo", "crawl", "--mode", "incremental"]
+        )
 
     def test_xueqiu(self):
-        self._assert_script("stockwatch_xueqiu", ["-m", "xueqiu", "crawl"])
+        self._assert_cmd_script("stockwatch_xueqiu", ["-m", "xueqiu", "crawl"])
 
     def test_market(self):
-        self._assert_script("stockwatch_market", ["-m", "market", "snapshot"])
+        self._assert_probe_script("stockwatch_market", "akshare", ["-m", "market", "snapshot"])
 
     def test_alert(self):
-        self._assert_script("stockwatch_alert", ["-m", "notify", "alert"])
+        self._assert_cmd_script("stockwatch_alert", ["-m", "notify", "alert"])
 
 
 if __name__ == "__main__":

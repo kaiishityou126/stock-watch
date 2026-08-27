@@ -8,7 +8,10 @@ CLI(agent 用 terminal 执行,stdout 只出纯 JSON):
         [--scenario light|heavy] [--lookback H] [--db PATH] [--config PATH]
     --date 可取值:today / yesterday / N-days-ago / last-mon..last-sun /
                    this-mon..this-sun / YYYYMMDD;缺省自动取库中最近交易日
-    --groups:index,sentiment,sectors,hot_rank,livenews,dragon;缺省全部
+    --groups:index,sentiment,sectors,hot_rank,livenews,dragon;缺省全部。
+        另有可选块 weibo_posts(博主博文,blogger-strategy 用):仅显式指定时读取,
+        uid 取 config.json 的 bloggers 清单,每人最新 N 条(--size weibo_posts:N,light 档 200),
+        无时间窗(长期画像要看足历史,不吃 lookback)
     --size:每组条数上限,如 sectors:20,hot_rank:20;覆盖 --scenario 预设
     --scenario:light(默认)/ heavy 两档 size 预设
     --lookback:快讯时间窗小时数,默认 24
@@ -39,14 +42,17 @@ _DEFAULT_DB = "data/app.db"
 
 # 板块切组默认条数:light = 轻量日报,heavy = 深度复盘(用 --scenario 或 --size 覆盖)
 SCENARIOS = {
-    "light": {"sectors": 20, "hot_rank": 20, "livenews": 15, "dragon": 10},
-    "heavy": {"sectors": 30, "hot_rank": 50, "livenews": 30, "dragon": 20},
+    "light": {"sectors": 20, "hot_rank": 20, "livenews": 15, "dragon": 10, "weibo_posts": 200},
+    "heavy": {"sectors": 30, "hot_rank": 50, "livenews": 30, "dragon": 20, "weibo_posts": 300},
 }
 DEFAULT_SCENARIO = "light"
 
-# 完整简报用到的数据块(weibo/xq 博主全文不进日报,留作 collect 旧行为内部使用)
+# 完整简报用到的数据块(weibo/xq 博主全文不进日报,留作 collect 旧行为内部使用)。
+# weibo_posts 是可选块:uid 由 config.json 驱动、每人最新 post_limit 条,只服务策略提炼,
+# 不进"缺省全部"(否则定时日报会把几万字博文灌进 prompt),仅显式 --groups 指定时读取。
 ALL_GROUPS = ["index", "sentiment", "sectors", "hot_rank", "livenews", "dragon"]
-VALID_GROUPS = set(ALL_GROUPS)
+POST_GROUP = "weibo_posts"
+VALID_GROUPS = set(ALL_GROUPS) | {POST_GROUP}
 
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
@@ -166,11 +172,15 @@ def collect(
     lookback_hours: int = 24,
     trade_date: Optional[str] = None,
     groups: Optional[Sequence[str]] = None,
+    post_uids: Optional[Sequence[str]] = None,
+    post_limit: int = 200,
 ) -> dict:
     """汇总数据。trade_date 为 None 时自动取库中最近交易日(参考日)。
 
     groups 为 None 时读全部数据块(含微博/雪球博主全文,供 collect 旧调用方/测试);
     指定 groups 时只读列出的块,返回键与 groups 对应,并始终带 date。
+    POST_GROUP 块需要调用方传入 post_uids(来自 config.json 的 bloggers),每人最新
+    post_limit 条;post_uids 缺省/为空时该块返回空列表。
     """
     cutoff = time.time() - lookback_hours * 3600
     named_date = trade_date is not None  # 点名日期时快讯按该自然日过滤,不用最近窗口冒充
@@ -265,6 +275,21 @@ def collect(
                     "ORDER BY created_ts DESC",
                     (cutoff,),
                 )
+        if not all_groups and POST_GROUP in want:
+            # 博主博文块(策略提炼):per-uid 单独查询,uids 个位数、开销可忽略,
+            # 换来天然的每人 top-N。created_ts 顺转北京时可读串,LLM 标注时间跨度免算 epoch。
+            # 注意不能用 has():旧内部块 weibo 的输出键同为 weibo_posts,全块模式(groups=None)
+            # 下若在这里重查会用空结果把它覆盖掉
+            posts: list[dict] = []
+            for uid in post_uids or ():
+                posts.extend(_rows(
+                    conn,
+                    "SELECT uid, user_name, text, reposts_count, comments_count, attitudes_count, "
+                    "datetime(created_ts, 'unixepoch', '+8 hours') AS created_bj "
+                    "FROM posts WHERE uid = ? AND text != '' ORDER BY created_ts DESC LIMIT ?",
+                    (str(uid), int(post_limit)),
+                ))
+            result[POST_GROUP] = posts
     finally:
         conn.close()
 
@@ -315,6 +340,24 @@ def _config_db_path(config_path: str) -> str | None:
         return None
     v = data.get("db_path")
     return str(v) if v else None
+
+
+def _config_bloggers(config_path: str) -> list[str]:
+    """从 config.json 读 bloggers[].uid(去重保序);文件缺失/解析失败/为空返回 []。
+
+    与抓取侧 load_config 不同:只读不校验、失败不抛,是否算配置错误由调用方
+    (请求了 POST_GROUP 却拿不到 uid 时 fail)决定。
+    """
+    try:
+        data = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: list[str] = []
+    for b in data.get("bloggers") or []:
+        uid = str(b.get("uid", "")).strip()
+        if uid and uid not in out:
+            out.append(uid)
+    return out
 
 
 def _stale_today(data: dict, groups: Sequence[str], auto_date: bool) -> bool:
@@ -387,7 +430,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # 绕过下面的无数据守卫,把旧数据贴上未来日期的标签
             return fail(f"{resolved_str} 是未来日期,还没有数据")
 
-    data = collect(db_path, lookback_hours=args.lookback, trade_date=resolved_str, groups=groups)
+    # 博主博文块:uid 从 config.json 读;请求了该块却拿不到任何 uid 属于配置错误
+    post_uids: Optional[list[str]] = None
+    if POST_GROUP in groups:
+        post_uids = _config_bloggers(args.config)
+        if not post_uids:
+            return fail(f"{args.config} 未配置 bloggers(uid),无法读取博主博文")
+
+    data = collect(
+        db_path,
+        lookback_hours=args.lookback,
+        trade_date=resolved_str,
+        groups=groups,
+        post_uids=post_uids,
+        post_limit=size.get(POST_GROUP, SCENARIOS[args.scenario][POST_GROUP]),
+    )
 
     # 自动取日期且库里没有今天数据(请求了行情腿)→ 显式标记,让下游决定补拉
     # 而非拿回退到的旧日期数据冒充当天(点名历史日期不标记)

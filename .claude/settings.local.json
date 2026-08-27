@@ -9,7 +9,14 @@
       "Bash(hermes --help)",
       "Bash(where hermes *)",
       "Bash(hermes cron *)",
-      "Bash(hermes gateway *)"
+      "Bash(hermes gateway *)",
+      "Bash(python -m report.reader --groups index,sentiment,sectors,hot_rank)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(rm -f .tmp_rd.json .tmp_rd.err)",
+      "WebFetch(domain:www.wechatbot.dev)",
+      "WebFetch(domain:github.com)",
+      "Bash(git status *)",
+      "Bash(git reset *)"
     ]
   }
 }

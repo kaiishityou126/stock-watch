@@ -11,7 +11,10 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+from common import obs
 
 LOGIN_URL = "https://weibo.com/login.php"
 HOME_URL = "https://weibo.com/"
@@ -73,12 +76,27 @@ def login(profile_dir: str, timeout_sec: int = 180) -> None:
         raise SystemExit("登录超时:未检测到登录态,请重试 `python -m weibo login`")
 
 
+def _log_login_error(msg: str) -> None:
+    """登录态问题落到 ERROR 日志,供 notify alert 扫描推送。
+
+    SystemExit 只进 stderr:cron 的 no-agent 投递是本地,alert 又只认日志
+    第 2 段字段——不写这条的话,微博整轮空跑用户在微信上毫无感知。
+    """
+    try:
+        obs.log(obs.get_logger("weibo"), logging.ERROR, "登录", msg)
+    except Exception:
+        pass  # 日志失败不阻断原报错抛出
+
+
 def get_cookie_header(profile_dir: str) -> str:
     """headless 复用 profile,拼出 requests 用的 Cookie 头字符串。"""
-    from playwright.sync_api import sync_playwright
-
+    # profile 缺失在加载 playwright 前就拦下:报错更快,也让无 playwright 的测试环境可测本分支
     if not Path(profile_dir).exists():
-        raise SystemExit("还没登录:先运行 `python -m weibo login` 扫码")
+        msg = "还没登录:先运行 `python -m weibo login` 扫码"
+        _log_login_error(msg)
+        raise SystemExit(msg)
+
+    from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(profile_dir, headless=True)
@@ -92,6 +110,8 @@ def get_cookie_header(profile_dir: str) -> str:
             ctx.close()
 
     if not _is_logged_in(cookies):
-        raise SystemExit("登录态失效:请重新运行 `python -m weibo login` 扫码")
+        msg = "登录态失效:请重新运行 `python -m weibo login` 扫码"
+        _log_login_error(msg)
+        raise SystemExit(msg)
 
     return "; ".join(f"{c['name']}={c['value']}" for c in cookies)
