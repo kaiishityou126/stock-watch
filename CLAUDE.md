@@ -33,6 +33,7 @@ python deploy.py                               # 首次部署一键引导(依赖
 数据流:Hermes cron 定时触发 → 各爬虫包写 `data/app.db` → `report.reader` 读出 JSON → Hermes agent(装成 skill)组 prompt 调 LLM → 推送。仓库内无常驻进程。
 
 - **单库多包**:所有包共用 `data/app.db`,表按包划分——`posts`/`comments`/`crawl_state`(weibo)、`xq_posts`/`xq_hot_rank`/`xq_livenews`(xueqiu)、`index_snapshot`/`market_sentiment`/`market_snapshot`/`dragon_tiger`(market,全按 `trade_date` 存日快照)、`daily_report`(report)。某数据源没跑过、对应表不存在是常态,**读取侧一律当空结果处理,不许崩**(见 `report/reader.py` 的 `_rows`)。
+- **简报交付走 PDF**(`report/render.py`):LLM agent 按 skill 契约输出 `{title, content}` JSON,`python -m report.render` 把 content 渲成 PDF 落 `data/reports/`,再由 Hermes weixin `send_file` 投递——**1 次 iLink sendmessage,稳过 iLink 5次/分钟 限流**。不要在 skill 里让 LLM 直接出 markdown 文本(会被 weixin 切块连发,撞限流熔断)。
 - [common/](common) 共享层:`errors.py` 分型异常(AuthError=401/403 触发熔断,RateLimitError=429 退避重试;均继承 RuntimeError 保证 `except RuntimeError` 兜得住)、`obs.py`(结构化日志 + 熔断 flag `logs/<module>.paused` + 按字节偏移去重的 ERROR 扫描)、`stdio.py`(**每个 CLI 的 main() 入口必须调一次 `force_utf8_stdio()`**,否则 Windows 管道下 GBK 输出乱码)。
 - [weibo/](weibo) 与 [xueqiu/](xueqiu) 结构镜像:login(Playwright 持久化 profile,抓取时 headless 现取 cookie)/ crawler(requests 直连手机端 H5 接口)/ storage(SQLite)/ cli。雪球复用 `weibo.cli.load_config`;所有配置缺省值集中在 `weibo/cli.py` 的 `DEFAULTS`。
 - [market/fetcher.py](market/fetcher.py):akshare **以参数 `ak` 注入便于测试**(测试传假对象而非真 pandas);akshare 列名易变,边界处 `_pick`/`_require` 容错——缺列填 None 并记 MarketError,不静默给错数。模块加载时全局禁用 SSL 验证(国内网络自用工具)。四段快照在 CLI 里各自 try/except,互不阻断。

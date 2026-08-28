@@ -96,6 +96,43 @@ python -m notify alert                       # 扫日志 ERROR + 熔断 flag
 
 简报生成与推送由 **Hermes agent** 负责(见 [hermes/skills/daily-stock-brief_skill.md](hermes/skills/daily-stock-brief_skill.md)),不在本项目中手动执行。
 
+### 简报生成 + PDF 投递流程
+
+Hermes 定时任务(`stockwatch-daily` / `stockwatch-blogger`)触发的端到端流水线:
+
+```
+Hermes cron ──► LLM agent 读 skill.md
+              │  • 调 python -m report.reader 读 SQLite(只读)
+              │  • 按 skill 契约输出 JSON:{"title": "...", "content": "<markdown>"}
+              │
+              ▼
+Hermes ──────► python -m report.render
+              │  • 从 stdin 收 JSON
+              │  • markdown 库把 content 渲成 HTML
+              │  • xhtml2pdf 把 HTML 渲成 PDF(中文字体走 REPORT_FONT_PATH
+              │    或 C:\Windows\Fonts\msyh.ttc)
+              │  • 落盘到 data/reports/<YYYYMMDD>-<title>.pdf
+              │
+              ▼
+Hermes ──────► weixin 适配器 send_file(1 次 iLink sendmessage)
+              │
+              ▼
+           微信收到 1 个 PDF 文件(微信内置预览器,点开直接看)
+```
+
+**为什么走 PDF 而不是直接发文本?** iLink(腾讯个人微信机器人通道)限流 5 次/分钟;多块文本长简报会被切块连发,触发服务端频控,客户端熔断后整批本地失。改用 PDF 后单次 sendmessage 即投递完成,稳过限流。
+
+**手动验证渲染**(不依赖 LLM):
+
+```powershell
+# 准备一个 JSON 文件(字段契约见 daily-stock-brief_skill.md)
+python -m report.render path/to/brief.json --out data/reports/test.pdf
+# 走 stdin 也行
+type brief.json | python -m report.render
+```
+
+输出文件在 `data/reports/`,微信里点开即看;失败 stdout 是 `{"error": "..."}` 不 traceback。
+
 - 登录态存在 `.wb_profile/` / `.xq_profile/`,抓取自动复用;cookie 失效会报「登录态失效」,重跑对应 `login` 扫一次即可。
 - 连续登录失效会**熔断**并写 `logs/weibo.paused` / `logs/xueqiu.paused`,人工处理后删掉该文件再跑。
 
