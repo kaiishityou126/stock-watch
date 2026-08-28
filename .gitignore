@@ -16,3 +16,8 @@ venv/
 # 离线安装包(二进制,几百 MB;download.py 脚本本身要提交)
 offline_packages/*
 !offline_packages/download.py
+# 临时调试脚本 / 字体缓存 / 渲染输入(单次会话产物,不入仓)
+_*.py
+_*.ttf
+_*.ttc
+brief.json
