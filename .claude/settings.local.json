@@ -16,7 +16,21 @@
       "WebFetch(domain:www.wechatbot.dev)",
       "WebFetch(domain:github.com)",
       "Bash(git status *)",
-      "Bash(git reset *)"
+      "Bash(git reset *)",
+      "Bash(mkdir -p hermes/skills)",
+      "Bash(mv hermes/SKILL.md hermes/skills/daily-stock-brief_skill.md)",
+      "Bash(mv hermes/blogger-strategy.md hermes/skills/blogger-strategy_skill.md)",
+      "Bash(git config *)",
+      "Bash(grep -ivE \"your-|xxx|changeme|example|placeholder|\\\\$\\\\{|<\")",
+      "Bash(echo \"════ exit: $?\")",
+      "Bash(echo \"rc=$?\")",
+      "Bash(echo \"rc_empty=$?\")",
+      "Bash(echo \"rc_overflow=$?\")",
+      "Bash(grep -o '中危[^\"]\\\\{0,80\\\\}' \"C:\\\\Users\\\\Administrator\\\\.claude\\\\projects\\\\D--work-AI-project-stock-watch\\\\2d2171b2-eb98-4882-b919-f7453f237160.jsonl\")",
+      "Bash(grep *)",
+      "Bash(git *)",
+      "WebFetch(domain:akshare.akfamily.xyz)",
+      "Bash(pip show *)"
     ]
   }
 }
