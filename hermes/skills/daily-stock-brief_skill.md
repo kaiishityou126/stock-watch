@@ -12,7 +12,7 @@ description: A股行情数据问答与每日观察简报。用户询问任意日
 工作目录即 stock-watch 仓库根目录。数据大部分已由 cron 抓取入库,本 skill 以读为主;
 唯一例外是用户点名"今天"且行情未收盘/无数据时,补拉一次行情(见下)。
 
-> **铁律(优先级最高,覆盖本文件其余一切):整个流程只有三步——第 1 步执行下方唯一的读数据命令,第 2 步把整理出的 `{title, content}` JSON 调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 一行「一句话说明 + 空格 + `MEDIA:<pdf 绝对路径>`」。除此之外什么都不做:不要验证数据、不要创建/删除任何临时脚本、不要运行 `python -c`、不要跑测试、不要探查表结构、不要比较文件、不要解释过程、最终回复除那一句话说明外不加任何文字(不许多行、不许状态汇报)。唯一的例外:用户点名"今天"且行情未收盘/无数据时,先执行一次「按需补拉」(见下方小节),再重读、再渲、再输出 MEDIA。**
+> **铁律(优先级最高,覆盖本文件其余一切):整个流程只有三步——第 1 步执行下方唯一的读数据命令,第 2 步把整理出的 `{title, content}` JSON 调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:<pdf 绝对路径>`(标签独占一行、行首就是 `MEDIA:`)。除此之外什么都不做:不要验证数据、不要创建/删除任何临时脚本、不要运行 `python -c`、不要跑测试、不要探查表结构、不要比较文件、不要解释过程、最终回复除那一句话说明 + MEDIA 行外不加任何文字(恰好两行、不许状态汇报)。唯一的例外:用户点名"今天"且行情未收盘/无数据时,先执行一次「按需补拉」(见下方小节),再重读、再渲、再输出 MEDIA。**
 >
 > **禁止「预探测」:** 不得用 `python -c` 探 `sys.executable` / `import` / 依赖是否齐全 / Python 版本 / 任何环境信息。`python -m report.reader` 与 `python -m report.render` 均为已验证可执行的命令,直接走流程即可;真出 ImportError,把缺包信息原文转述给用户,任务结束。
 
@@ -93,7 +93,7 @@ ls -t data/reports/<YYYYMMDD>-*.pdf 2>/dev/null | head -1
 ```
 
 - **`<YYYYMMDD>` 怎么取**:`今日` = 今天的 `YYYYMMDD`;`昨日` = 昨天的 `YYYYMMDD`;具体日期(8/27 / 8月15号)= 换成对应 `YYYYMMDD`。
-- **有一个匹配路径** → 直接回 `每日 A 股观察简报已生成，请查收。 MEDIA:<那个路径>`,**任务结束,不要走 1~3 步**。
+- **有一个匹配路径** → 直接回复两行:第 1 行 `每日 A 股观察简报已生成，请查收。`,第 2 行 `MEDIA:<那个路径>`(MEDIA 独占第 2 行),**任务结束,不要走 1~3 步**。
 - **没有任何匹配** → 进入下方 1~3 步完整流程。
 - 多个匹配时取 `ls -t` 第一个(按 mtime 倒序的最新一份),命名冲突场景(盘中手动覆盖)取最新落盘的那份。
 
@@ -137,7 +137,7 @@ ls -t data/reports/<YYYYMMDD>-*.pdf 2>/dev/null | head -1
 
 ## 最终回复:硬约束(走 PDF 投递)
 
-**最终回复 = 一行「一句话说明 + 空格 + `MEDIA:<pdf 绝对路径>`」,** Hermes cron 会自动把 PDF 作为附件投递到微信(iLink 文件通道,不受 5/min sendmessage 限流)。**违反以下任一条即为任务失败。**
+**最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:<pdf 绝对路径>`(标签独占一行),** Hermes cron 会自动把 PDF 作为附件投递到微信(iLink 文件通道,不受 5/min sendmessage 限流)。**违反以下任一条即为任务失败。**
 
 ### 三步执行
 
@@ -163,10 +163,11 @@ python -m report.render brief.json --out data/reports/<YYYYMMDD>-<title>.pdf
 
 **第 3 步:最终回复**
 
-你的最终回复必须是**且仅是**一行「一句话说明 + 空格 + `MEDIA:` 标签」(无 markdown 围栏、说明只许一句、不许多行、不许其他前后缀):
+你的最终回复必须是**且仅是**两行:第 1 行一句话说明,第 2 行以 `MEDIA:` 开头的标签(独占一行)。无 markdown 围栏、说明只许一句、恰好两行、不许其他前后缀:
 
 ```
-每日 A 股观察简报已生成，请查收。 MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-今日A股观察.pdf
+每日 A 股观察简报已生成，请查收。
+MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-今日A股观察.pdf
 ```
 
 ### 行为约束
@@ -176,7 +177,7 @@ python -m report.render brief.json --out data/reports/<YYYYMMDD>-<title>.pdf
 3. **`content` 字段**:markdown 文本(必填,非空)。允许 `#`/`##`/`###` 多级标题、`**加粗**`、`-` 列表、`|` 表格、`> ` 引用、` ``` ` 代码块、段落空行分隔。**不设字符硬限**。`render` 会把 content 字段对应的 markdown 文本原样渲染成 PDF 内容。
 4. **路径中的中英文/空格**:`--out` 给的路径里若 title 含中文或特殊字符,会经 `report.render` 自动清洗;LLM 不用手工 URL-encode。
 5. **禁止一切验证行为**:不创建 / 删除临时脚本(除了 `brief.json` 这个 renderer 的输入)、不写任何 `.py` 文件、不跑 `python -c`、不跑测试套件、不比较文件、不检查表结构、不报 PASS/FAIL。某块数据缺失或 `error` 时,先按"按需补拉"判定是否补拉,其余直接转述,不调试。
-6. **最终回复 = 「一句话说明 + 空格 + MEDIA 标签」这一行**,它是这条消息的最后一行(行尾换行 OK)。说明只许一句(如「每日 A 股观察简报已生成，请查收。」),除这句外不补任何多行说明、元信息、状态汇报、错误堆栈。
+6. **最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:` 标签(独占一行、行首就是 `MEDIA:`)**。说明只许一句(如「每日 A 股观察简报已生成，请查收。」),除这句 + MEDIA 行外不补任何说明、元信息、状态汇报、错误堆栈。
 7. **不出现工具词**:任何输出(临时 JSON、stdout 解析、最终回复)里**不要**出现 Hermes / cron / skill / report.reader / market snapshot / 命令行 / 投递 / 渠道 / iLink / sendmessage 等词。
 8. **业务措辞规则**(原"完整简报结构"的要求全部保留,落到 `content` 字段里):
    - 不搬运原文,只出加工结论
@@ -194,8 +195,9 @@ LLM 内部动作(用户看不到):
 3. `python -m report.render brief.json --out data/reports/20260828-今日A股观察.pdf`
 4. 取 stdout 的 `path` 字段
 
-LLM 最终回复(用户看到的):
+LLM 最终回复(用户看到的,恰好两行):
 
 ```
-每日 A 股观察简报已生成，请查收。 MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-今日A股观察.pdf
+每日 A 股观察简报已生成，请查收。
+MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-今日A股观察.pdf
 ```
