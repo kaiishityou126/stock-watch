@@ -30,7 +30,9 @@
       "Bash(grep *)",
       "Bash(git *)",
       "WebFetch(domain:akshare.akfamily.xyz)",
-      "Bash(pip show *)"
+      "Bash(pip show *)",
+      "WebSearch",
+      "Bash(git fetch *)"
     ]
   }
 }
