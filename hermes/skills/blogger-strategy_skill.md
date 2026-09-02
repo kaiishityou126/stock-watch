@@ -8,7 +8,7 @@ description: 微博大 V 投资策略提炼:读取指定博主的博文 → 调 
 
 工作目录即 stock-watch 仓库根目录。数据已由 cron 抓取入库,本技能只读,**固定两步**。
 
-> **铁律(优先级最高,覆盖本文件其余一切):整个流程只有三步——第 1 步执行下方唯一的读取命令,第 2 步基于读出的 JSON 组织 `{title, content}` 并调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 一行 `MEDIA:<pdf 绝对路径>` 标签。除此之外什么都不做:不要 cat config.json、不要自己写 SQL、不要探查表结构、不要运行任何第二条命令、读取报错也不要换参数重试、也不要验证 PDF 是否生成。**
+> **铁律(优先级最高,覆盖本文件其余一切):整个流程只有三步——第 1 步执行下方唯一的读取命令,第 2 步基于读出的 JSON 组织 `{title, content}` 并调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 一行「一句话说明 + 空格 + `MEDIA:<pdf 绝对路径>`」。除此之外什么都不做:不要 cat config.json、不要自己写 SQL、不要探查表结构、不要运行任何第二条命令、读取报错也不要换参数重试、也不要验证 PDF 是否生成。**
 >
 > **禁止「预探测」:** 不得用 `python -c` 探 `sys.executable` / `import` / 依赖是否齐全 / Python 版本 / 任何环境信息。`python -m report.reader` 与 `python -m report.render` 均为已验证可执行的命令,直接走流程即可;真出 ImportError,把缺包信息原文转述给用户,任务结束。
 
@@ -20,11 +20,11 @@ description: 微博大 V 投资策略提炼:读取指定博主的博文 → 调 
 **不适用于定时任务**——周五盘后 cron 触发必须走完整流程。
 
 ```bash
-ls -t data/reports/*博主策略*.pdf 2>/dev/null | head -1
+ls -t data/reports/*投资策略提炼*.pdf 2>/dev/null | head -1
 ```
 
-- 匹配文件名前缀含"博主策略"(同 `report.render` 给 blogger-strategy 用的命名)。
-- **有一个匹配路径** → 直接回 `MEDIA:<那个路径>`,**任务结束,不要走下方步骤**。
+- 匹配文件名含"投资策略提炼"(同第 2 步 `--out` 用的固定文件名槽,与日报 PDF 区分)。
+- **有一个匹配路径** → 直接回 `投资策略提炼已生成，请查收。 MEDIA:<那个路径>`,**任务结束,不要走下方步骤**。
 - **没有任何匹配** → 进入下方完整流程。
 - 多个匹配时取 `ls -t` 第一个(按 mtime 倒序的最新一份)。
 
@@ -62,10 +62,10 @@ python -m report.reader --groups weibo_posts
 }
 ```
 
-渲染命令(**`--out` 必须给绝对路径或仓库根目录下的相对路径**):
+渲染命令(**`--out` 必须给绝对路径或仓库根目录下的相对路径**;文件名槽固定为 `投资策略提炼`,供快路径稳定匹配):
 
 ```
-python -m report.render brief.json --out data/reports/<YYYYMMDD>-<title>.pdf
+python -m report.render brief.json --out data/reports/<YYYYMMDD>-投资策略提炼.pdf
 ```
 
 - `report.render` 成功时 stdout 输出 `{"ok": true, "path": "..."}`,从 `path` 字段取 PDF 绝对路径
@@ -74,10 +74,10 @@ python -m report.render brief.json --out data/reports/<YYYYMMDD>-<title>.pdf
 
 ## 第 3 步:最终回复(MEDIA 标签)
 
-你的最终回复必须是**且仅是**一行 `MEDIA:` 标签(无 markdown 围栏、无前后缀文字、无其他任何字符):
+你的最终回复必须是**且仅是**一行「一句话说明 + 空格 + `MEDIA:` 标签」(无 markdown 围栏、说明只许一句、不许多行、不许其他前后缀):
 
 ```
-MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-微博大V投资策略提炼.pdf
+投资策略提炼已生成，请查收。 MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-投资策略提炼.pdf
 ```
 
 **规则:**
@@ -86,5 +86,5 @@ MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-微博大V投资�
 - 不评判对错,不推荐跟单
 - 标注信息来源的时间跨度
 - `content` 末尾必须声明"仅供参考,不构成投资建议"
-- 最终回复只有 MEDIA 那一行,不要附加任何说明、错误堆栈、状态汇报
+- 最终回复 = 一句话说明 + 空格 + MEDIA(如「投资策略提炼已生成，请查收。 MEDIA:...」),说明只许一句,不附加多行说明、错误堆栈、状态汇报
 - 不要在 JSON / 最终回复 / stdout 解析里出现 Hermes / cron / skill / report.reader / render / 命令行 / 投递 / 渠道 / iLink / sendmessage / PDF 等词
