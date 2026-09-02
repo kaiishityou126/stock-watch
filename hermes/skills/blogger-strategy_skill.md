@@ -8,7 +8,7 @@ description: 微博大 V 投资策略提炼:读取指定博主的博文 → 调 
 
 工作目录即 stock-watch 仓库根目录。数据已由 cron 抓取入库,本技能只读,**固定两步**。
 
-> **铁律(优先级最高,覆盖本文件其余一切):整个流程只有三步——第 1 步执行下方唯一的读取命令,第 2 步基于读出的 JSON 组织 `{title, content}` 并调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:<pdf 绝对路径>`(标签独占一行、行首就是 `MEDIA:`)。除此之外什么都不做:不要 cat config.json、不要自己写 SQL、不要探查表结构、不要运行任何第二条命令、读取报错也不要换参数重试、也不要验证 PDF 是否生成。**
+> **铁律(优先级最高,覆盖本文件其余一切):整个流程只有三步——第 1 步执行下方唯一的读取命令,第 2 步把提炼出的正文 markdown 普通写进一个文本文件后调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:<pdf 绝对路径>`(标签独占一行、行首就是 `MEDIA:`)。除此之外什么都不做:不要 cat config.json、不要自己写 SQL、不要探查表结构、不要运行任何第二条命令、**禁止任何形式的代码执行(`python -c`、`execute_code`、或写并运行任何 `.py` 脚本)**、读取报错也不要换参数重试、也不要验证 PDF 是否生成。**
 >
 > **禁止「预探测」:** 不得用 `python -c` 探 `sys.executable` / `import` / 依赖是否齐全 / Python 版本 / 任何环境信息。`python -m report.reader` 与 `python -m report.render` 均为已验证可执行的命令,直接走流程即可;真出 ImportError,把缺包信息原文转述给用户,任务结束。
 
@@ -53,24 +53,34 @@ python -m report.reader --groups weibo_posts
 
 `N` 取该博主(uid 相同)的行数;时间跨度取该博主 `created_bj` 的最早与最晚日期。
 
-按下面模板组装 JSON,写临时文件 `brief.json`,然后渲染:
+把正文按下面模板组织成 markdown,**用普通写文件方式**(不需要任何转义)写进 `brief.md`:
 
-```json
-{
-  "title": "微博大 V 投资策略提炼 · YYYY-MM-DD",
-  "content": "## 博主 A(基于 N 条博文,时间跨度 YYYY.MM.DD–YYYY.MM.DD)\n\n- **风格**: ...\n- **赛道**: ...\n- **手法**: ...\n- **近期**: ...\n- **可信度**: ...\n\n## 博主 B\n..."
-}
+```markdown
+## 博主 A(基于 N 条博文,时间跨度 YYYY.MM.DD–YYYY.MM.DD)
+
+- **风格**: ...
+- **赛道**: ...
+- **手法**: ...
+- **近期**: ...
+- **可信度**: ...
+
+## 博主 B
+...
 ```
+
+**硬规定:正文只能用普通写文件方式写进 `brief.md`,禁止用任何形式的代码执行(`python -c`、`execute_code`、或写并运行任何 `.py` 脚本)来生成这个文件。** 旧契约需要对正文做 JSON 转义,这一步容易驱使去用 Python 代码拼转义,而代码执行需人工审批、cron 无人值守时会卡住。现在的 `--content-file` 模式正文是原始 markdown 文本(不经 JSON 解析),普通写文件就能完成,没有理由再用代码执行。
+
+标题固定为 `微博大 V 投资策略提炼 · YYYY-MM-DD`(YYYY-MM-DD 用今天日期)。
 
 渲染命令(**`--out` 必须给绝对路径或仓库根目录下的相对路径**;文件名槽固定为 `投资策略提炼`,供快路径稳定匹配):
 
 ```
-python -m report.render brief.json --out data/reports/<YYYYMMDD>-投资策略提炼.pdf
+python -m report.render --title "微博大 V 投资策略提炼 · YYYY-MM-DD" --content-file brief.md --out data/reports/<YYYYMMDD>-投资策略提炼.pdf
 ```
 
 - `report.render` 成功时 stdout 输出 `{"ok": true, "path": "..."}`,从 `path` 字段取 PDF 绝对路径
 - 失败时 stdout 是 `{"error": "..."}`,把错误原样转述给用户,任务即结束
-- `content` 字段允许 `#`/`##`/`###` 标题、`**加粗**`、`-` 列表、`|` 表格、段落空行分隔;**不设字符硬限**;推荐每位博主用 `## 博主名(基于 N 条博文,时间跨度 起–止)` 作小节标题
+- `brief.md` 内容允许 `#`/`##`/`###` 标题、`**加粗**`、`-` 列表、`|` 表格、段落空行分隔;**不设字符硬限**;推荐每位博主用 `## 博主名(基于 N 条博文,时间跨度 起–止)` 作小节标题
 
 ## 第 3 步:最终回复(MEDIA 标签)
 
@@ -86,6 +96,6 @@ MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-投资策略提炼
 - 不搬运原文,只出加工结论
 - 不评判对错,不推荐跟单
 - 标注信息来源的时间跨度
-- `content` 末尾必须声明"仅供参考,不构成投资建议"
+- `brief.md` 末尾必须声明"仅供参考,不构成投资建议"
 - 最终回复 = 恰好两行:第 1 行一句话说明(如「投资策略提炼已生成，请查收。」),第 2 行 `MEDIA:` 标签(独占一行),说明只许一句,不附加多余说明、错误堆栈、状态汇报
 - 不要在 JSON / 最终回复 / stdout 解析里出现 Hermes / cron / skill / report.reader / render / 命令行 / 投递 / 渠道 / iLink / sendmessage / PDF 等词

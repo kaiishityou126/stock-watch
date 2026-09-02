@@ -2,14 +2,20 @@
 
     python -m report.render [--out PATH] [--title TEXT]   (从 stdin 读 JSON {"title","content"})
     python -m report.render path/to/brief.json --out out.pdf
+    python -m report.render --title "标题" --content-file brief.md --out out.pdf
+        （纯文本模式:content 走普通 markdown 文件,不经 JSON,免转义;
+        推荐 LLM/agent 调用方用这种,不用拼 JSON 字符串）
 
-Hermes cron 任务在 LLM 产出 JSON 后调用,把 content 字段的 markdown 文本
-渲染成 PDF,落盘到 data/reports/,再由 weixin 适配器 send_file 投递。
-本模块只负责"取 JSON → 出 PDF",不查 SQLite、不决定内容。
+Hermes cron 任务在 LLM 产出内容后调用,把 markdown 文本渲染成 PDF,
+落盘到 data/reports/,再由 weixin 适配器 send_file 投递。
+本模块只负责"取内容 → 出 PDF",不查 SQLite、不决定内容。
 
 设计要点:
-- JSON 契约与 daily-stock-brief_skill.md / blogger-strategy_skill.md 完全一致:
-  {"title": str, "content": str(markdown)}。两个字段都必填,缺则 raise。
+- 两种输入契约二选一:
+  1) JSON 模式:{"title": str, "content": str(markdown)},两个字段都必填,缺则 raise。
+  2) 纯文本模式(--title + --content-file):content 是原始 markdown 文本文件,
+     不经过 JSON 解析——调用方只需把 markdown 原文写进普通文件即可,不用做
+     任何转义,从根源上避免"为了拼转义正确的 JSON 而去写代码执行"这类问题。
 - 渲染栈:markdown 库解析 md→HTML(标签层面),BeautifulSoup 切节点,
   reportlab 把每个节点画成 Flowable(标题/段落/列表/表格/代码块/引用)。
   之前用 xhtml2pdf,在 Windows 上 @font-face + file:// + .ttc 三者组合
@@ -406,17 +412,31 @@ def main(argv: list[str] | None = None) -> int:
         description="Markdown → PDF 渲染(简报/策略提炼的下游交付环节,接收 {title, content} JSON)"
     )
     ap.add_argument("input", nargs="?", default="-",
-                    help="输入 JSON 文件路径,或 - 表示从 stdin 读(默认)")
+                    help="输入 JSON 文件路径,或 - 表示从 stdin 读(默认,与 --title 二选一)")
     ap.add_argument("--out", default=None, help="输出 PDF 路径;不传则按 title+日期生成到 data/reports/")
+    ap.add_argument("--title", default=None,
+                    help="标题;传了这个就走纯文本模式(免 JSON 转义),与 --content-file 搭配")
+    ap.add_argument("--content-file", default=None,
+                    help="正文 markdown 纯文本文件路径(原样文本,不需要 JSON 转义);"
+                         "不传则从 stdin 读原始 markdown")
     args = ap.parse_args(argv)
 
     try:
-        if args.input == "-":
+        if args.title is not None:
+            # 纯文本模式:content 是原始 markdown,不经过 JSON 解析,
+            # 调用方(LLM)只需把 markdown 原文写进一个普通文件,免转义。
+            if args.content_file:
+                content = Path(args.content_file).read_text(encoding="utf-8")
+            else:
+                content = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+            payload = {"title": args.title, "content": content}
+        elif args.input == "-":
             # Windows 下 stdin 含中文时可能带 surrogate,先按 utf-8/errors 还原
             raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+            payload = json.loads(raw)
         else:
             raw = Path(args.input).read_text(encoding="utf-8")
-        payload = json.loads(raw)
+            payload = json.loads(raw)
     except json.JSONDecodeError as e:
         print(json.dumps({"error": f"JSON 解析失败: {e}"}, ensure_ascii=False))
         return 0

@@ -137,6 +137,35 @@ class TestMainCLI(unittest.TestCase):
         out = json.loads(buf.getvalue())
         self.assertIn("error", out)
 
+    def test_title_content_file_mode_to_pdf(self) -> None:
+        """--title + --content-file 纯文本模式:content 是原始 markdown 文件,
+        不经 JSON 解析,免转义(修复 LLM 为拼转义 JSON 而误用代码执行的问题)。
+        """
+        import io
+        from contextlib import redirect_stdout
+
+        if render._md is None or render.pdfmetrics is None or render.BeautifulSoup is None:
+            self.skipTest("缺 markdown/beautifulsoup4/reportlab 依赖")
+        try:
+            render._resolve_font_path()
+        except RuntimeError as e:
+            self.skipTest(f"缺字体: {e}")
+
+        content_path = Path(self.tmp.name) / "brief.md"
+        content_path.write_text(_SAMPLE["content"], encoding="utf-8")
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = render.main([
+                "--title", _SAMPLE["title"],
+                "--content-file", str(content_path),
+                "--out", self.out,
+            ])
+        self.assertEqual(rc, 0)
+        out = json.loads(buf.getvalue())
+        self.assertTrue(out.get("ok"))
+        self.assertTrue(os.path.exists(self.out))
+
 
 if __name__ == "__main__":
     unittest.main()

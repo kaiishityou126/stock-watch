@@ -129,6 +129,8 @@ Hermes ──────► weixin 适配器 send_file(1 次 iLink sendmessage)
 python -m report.render path/to/brief.json --out data/reports/test.pdf
 # 走 stdin 也行
 type brief.json | python -m report.render
+# 纯文本模式(推荐 agent/LLM 用这种,免 JSON 转义):正文是普通 markdown 文件
+python -m report.render --title "标题" --content-file brief.md --out data/reports/test.pdf
 ```
 
 输出文件在 `data/reports/`,微信里点开即看;失败 stdout 是 `{"error": "..."}` 不 traceback。

@@ -12,7 +12,7 @@ description: A股行情数据问答与每日观察简报。用户询问任意日
 工作目录即 stock-watch 仓库根目录。数据大部分已由 cron 抓取入库,本 skill 以读为主;
 唯一例外是用户点名"今天"且行情未收盘/无数据时,补拉一次行情(见下)。
 
-> **铁律(优先级最高,覆盖本文件其余一切):整个流程只有三步——第 1 步执行下方唯一的读数据命令,第 2 步把整理出的 `{title, content}` JSON 调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:<pdf 绝对路径>`(标签独占一行、行首就是 `MEDIA:`)。除此之外什么都不做:不要验证数据、不要创建/删除任何临时脚本、不要运行 `python -c`、不要跑测试、不要探查表结构、不要比较文件、不要解释过程、最终回复除那一句话说明 + MEDIA 行外不加任何文字(恰好两行、不许状态汇报)。唯一的例外:用户点名"今天"且行情未收盘/无数据时,先执行一次「按需补拉」(见下方小节),再重读、再渲、再输出 MEDIA。**
+> **铁律(优先级最高,覆盖本文件其余一切):整个流程只有三步——第 1 步执行下方唯一的读数据命令,第 2 步把正文 markdown 普通写进一个文本文件后调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:<pdf 绝对路径>`(标签独占一行、行首就是 `MEDIA:`)。除此之外什么都不做:不要验证数据、**禁止任何形式的代码执行(`python -c`、`execute_code`、或写并运行任何 `.py` 脚本)**、不要跑测试、不要探查表结构、不要比较文件、不要解释过程、最终回复除那一句话说明 + MEDIA 行外不加任何文字(恰好两行、不许状态汇报)。代码执行需人工审批,cron 无人值守时会卡住任务——正文只需普通写文件就能完成,没有任何理由要用代码执行。唯一的例外:用户点名"今天"且行情未收盘/无数据时,先执行一次「按需补拉」(见下方小节),再重读、再渲、再输出 MEDIA。**
 >
 > **禁止「预探测」:** 不得用 `python -c` 探 `sys.executable` / `import` / 依赖是否齐全 / Python 版本 / 任何环境信息。`python -m report.reader` 与 `python -m report.render` 均为已验证可执行的命令,直接走流程即可;真出 ImportError,把缺包信息原文转述给用户,任务结束。
 
@@ -151,12 +151,13 @@ python -m report.reader [--date 符号] [--groups ...]
 
 **第 2 步:渲染 PDF**
 
-按上方「3. 生成回答」小节的结构,组装 `{title, content}` JSON 对象,然后执行:
+按上方「3. 生成回答」小节的结构,把正文 markdown 原样写进一个普通文本文件 `brief.md`(普通写文件即可,**不需要任何转义**、不需要拼 JSON),然后执行:
 
 ```
-python -m report.render brief.json --out data/reports/<YYYYMMDD>-<title>.pdf
+python -m report.render --title "<标题>" --content-file brief.md --out data/reports/<YYYYMMDD>-<title>.pdf
 ```
 
+- **硬规定:正文只能用普通写文件方式写进 `brief.md`,禁止用任何形式的代码执行(`python -c`、`execute_code`、或写并运行任何 `.py` 脚本)来生成这个文件。** 旧契约是 `{title,content}` JSON,需要对正文做 JSON 转义(换行变 `\n`、引号转义等),这一步容易驱使去用 Python 代码来拼转义,而代码执行需人工审批、cron 无人值守时会卡住。现在的 `--content-file` 模式正文是原始 markdown 文本(不经 JSON 解析),普通写文件就能完成,没有理由再用代码执行。
 - `--out` 必须给**绝对路径**或仓库根目录下的相对路径(Hermes 的 MEDIA 标签必须能解析到磁盘文件)
 - 成功时 `report.render` 在 stdout 输出 `{"ok": true, "path": "..."}`,从 `path` 字段取 PDF 绝对路径
 - 失败时 stdout 是 `{"error": "..."}`,把错误原样转述给用户,任务即结束
@@ -172,27 +173,27 @@ MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-今日A股观察.p
 
 ### 行为约束
 
-1. **三步顺序不可乱**:先 reader → 再 render → 最后 MEDIA。**禁止**用 `python -c` 手写 JSON / 拼字符串生成 PDF。
-2. **`title` 字段**:`{title, content}` JSON 里的 `title` 字符串(必填,非空)。用作 PDF 首页标题与文件名(自动加日期戳)。
-3. **`content` 字段**:markdown 文本(必填,非空)。允许 `#`/`##`/`###` 多级标题、`**加粗**`、`-` 列表、`|` 表格、`> ` 引用、` ``` ` 代码块、段落空行分隔。**不设字符硬限**。`render` 会把 content 字段对应的 markdown 文本原样渲染成 PDF 内容。
+1. **三步顺序不可乱**:先 reader → 再 render → 最后 MEDIA。**禁止任何形式的代码执行**(`python -c`、`execute_code`、或写并运行任何 `.py` 脚本)来生成 `brief.md` 或 PDF。
+2. **`--title` 参数**:PDF 首页标题与文件名(自动加日期戳)的来源,必填非空字符串。
+3. **`brief.md` 正文**:markdown 文本(必填非空)。允许 `#`/`##`/`###` 多级标题、`**加粗**`、`-` 列表、`|` 表格、`> ` 引用、` ``` ` 代码块、段落空行分隔。**不设字符硬限**。`render` 会把 `--content-file` 对应的 markdown 文本原样渲染成 PDF 内容。
 4. **路径中的中英文/空格**:`--out` 给的路径里若 title 含中文或特殊字符,会经 `report.render` 自动清洗;LLM 不用手工 URL-encode。
-5. **禁止一切验证行为**:不创建 / 删除临时脚本(除了 `brief.json` 这个 renderer 的输入)、不写任何 `.py` 文件、不跑 `python -c`、不跑测试套件、不比较文件、不检查表结构、不报 PASS/FAIL。某块数据缺失或 `error` 时,先按"按需补拉"判定是否补拉,其余直接转述,不调试。
+5. **禁止一切验证行为**:不创建 / 删除临时脚本(除了 `brief.md` 这个 renderer 的输入)、不写任何 `.py` 文件、不跑 `python -c` / `execute_code`、不跑测试套件、不比较文件、不检查表结构、不报 PASS/FAIL。某块数据缺失或 `error` 时,先按"按需补拉"判定是否补拉,其余直接转述,不调试。
 6. **最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:` 标签(独占一行、行首就是 `MEDIA:`)**。说明固定为「A 股观察简报已生成，请查收。」(不加「每日/今日/昨日」等日期词,避免与实际交付日期不符),除这句 + MEDIA 行外不补任何说明、元信息、状态汇报、错误堆栈。
 7. **不出现工具词**:任何输出(临时 JSON、stdout 解析、最终回复)里**不要**出现 Hermes / cron / skill / report.reader / market snapshot / 命令行 / 投递 / 渠道 / iLink / sendmessage 等词。
-8. **业务措辞规则**(原"完整简报结构"的要求全部保留,落到 `content` 字段里):
+8. **业务措辞规则**(原"完整简报结构"的要求全部保留,落到 `brief.md` 正文里):
    - 不搬运原文,只出加工结论
    - 不给任何操作建议
    - 资金流措辞"主力净流入估算""中小单净流出估算"
    - 热榜 / 快讯需注明"反映市场注意力,需与板块资金流与盘面交叉印证,非买卖建议"
-   - **盘中快照标注**:仅当 `is_close_data: false` 时,`content` 开头加一句"盘中实时快照,数据截至 {fetched_at_bj}(北京时间),收盘数据以盘后简报为准";`is_close_data: true` 不加。两融措辞"最近披露(T+1)"。
+   - **盘中快照标注**:仅当 `is_close_data: false` 时,`brief.md` 开头加一句"盘中实时快照,数据截至 {fetched_at_bj}(北京时间),收盘数据以盘后简报为准";`is_close_data: true` 不加。两融措辞"最近披露(T+1)"。
 
 ### 完整流程示例(供理解,不要求照抄)
 
 LLM 内部动作(用户看不到):
 
 1. `python -m report.reader` → stdout 拿到 JSON
-2. 把行情摘要组织成 `{"title": "每日 A 股观察 · 2026-08-28", "content": "## 总览\n..."}`,写临时文件 `brief.json`
-3. `python -m report.render brief.json --out data/reports/20260828-今日A股观察.pdf`
+2. 把行情摘要组织成 markdown 正文,普通写文件写进 `brief.md`(不需转义)
+3. `python -m report.render --title "每日 A 股观察 · 2026-08-28" --content-file brief.md --out data/reports/20260828-今日A股观察.pdf`
 4. 取 stdout 的 `path` 字段
 
 LLM 最终回复(用户看到的,恰好两行):
