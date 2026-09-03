@@ -14,7 +14,7 @@
   [6] hermes gateway setup:没配则拉起向导(飞书/企业微信/钉钉/Telegram/Discord/Slack…)
   [7] weibo / xueqiu login:拉起,你扫码
   [8] 拷 hermes/scripts/*.py 到 Hermes 脚本目录
-  [9] 装 skill 到 Hermes 技能目录 + 建 6 条 cron(已存在跳过)
+  [9] 装 skill 到 Hermes 技能目录 + 建 6 条 cron(已存在跳过)+ 关闭 cron 响应包装
   [10] hermes gateway install
   [11] 询问是否现在跑 weibo full 全量基线
   [12] 打印验证清单
@@ -455,6 +455,10 @@ def _existing_cron_names() -> set[str]:
 
 def step_cron() -> None:
     hr("[9] 装 skill + 创建 Hermes cron 任务(已存在跳过,skill 每次覆盖重装)")
+    # 关掉 cron 投递的系统包装(“Cronjob Response: ... / To stop or manage this job...”),
+    # 否则每条 cron 消息都会带这段英文头尾,和 skill 的中文两行契约混在一起。幂等,可重跑。
+    if run(["hermes", "config", "set", "cron.wrap_response", "false"]) != 0:
+        say("⚠️  设置 cron.wrap_response 失败,请手动执行: hermes config set cron.wrap_response false")
     existing = _existing_cron_names()
     workdir = str(REPO)
     for name, schedule, kind, target in CRON_JOBS:

@@ -102,16 +102,16 @@ Hermes 定时任务(`stockwatch-daily` / `stockwatch-blogger`)触发的端到端
 
 ```
 Hermes cron ──► LLM agent 读 skill.md
+              │  • 调 python -m report.find   先查当日 PDF 是否已有且数据完整(快路径)
               │  • 调 python -m report.reader 读 SQLite(只读)
-              │  • 按 skill 契约输出 JSON:{"title": "...", "content": "<markdown>"}
+              │  • 把正文 markdown 写进 brief.md(纯文本,免 JSON 转义)
               │
               ▼
-Hermes ──────► python -m report.render
-              │  • 从 stdin 收 JSON
-              │  • markdown 库把 content 渲成 HTML
-              │  • xhtml2pdf 把 HTML 渲成 PDF(中文字体走 REPORT_FONT_PATH
-              │    或 C:\Windows\Fonts\msyh.ttc)
-              │  • 落盘到 data/reports/<YYYYMMDD>-<title>.pdf
+Hermes ──────► python -m report.render --title ... --content-file brief.md
+              │  • markdown 库把正文渲成 HTML
+              │  • reportlab 把 HTML 画成 PDF(中文字体走 REPORT_FONT_PATH
+              │    或 C:\Windows\Fonts\simhei.ttf)
+              │  • 落盘到 data/reports/<YYYYMMDD>-A股观察简报.pdf(文件名固定,同一天只一份)
               │
               ▼
 Hermes ──────► weixin 适配器 send_file(1 次 iLink sendmessage)
@@ -120,17 +120,24 @@ Hermes ──────► weixin 适配器 send_file(1 次 iLink sendmessage)
            微信收到 1 个 PDF 文件(微信内置预览器,点开直接看)
 ```
 
+**交付形式分流**:单项查询(大盘指数 / 龙虎榜 / 板块资金流等)直接回**纯文本**;只有**完整简报**(用户说"简报/日报/复盘"或 cron 触发)才出 PDF。
+
 **为什么走 PDF 而不是直接发文本?** iLink(腾讯个人微信机器人通道)限流 5 次/分钟;多块文本长简报会被切块连发,触发服务端频控,客户端熔断后整批本地失。改用 PDF 后单次 sendmessage 即投递完成,稳过限流。
 
-**手动验证渲染**(不依赖 LLM):
+**文件名与复用**:同一数据日期固定只有一份 `<YYYYMMDD>-A股观察简报.pdf`——不管你说"昨天/今天/本周一"还是 cron 自动跑,都落到同一个文件。`report.find` 还会判定这份 PDF **能不能直接复用**:次日及以后生成的、或当天 `report_reuse_after`(默认 18:10)之后生成的算"数据完整版"可复用;盘中生成的快照版会重新生成。这套时间判定**只对 A 股观察简报生效**(它依赖"行情某个时刻才完整"这个前提);博主策略提炼的 PDF 走各自 skill 的文件名匹配,不读这个阈值。
+
+**手动验证**(不依赖 LLM):
 
 ```powershell
-# 准备一个 JSON 文件(字段契约见 daily-stock-brief_skill.md)
+# 查当日 PDF 是否已有且可复用(输出纯 JSON)
+python -m report.find --date 20260902
+
+# 纯文本模式(agent/LLM 走这种,免 JSON 转义):正文是普通 markdown 文件
+python -m report.render --title "A 股观察简报 · 2026-09-02" --content-file brief.md --out data/reports/20260902-A股观察简报.pdf
+
+# JSON 模式(旧契约,仍兼容)
 python -m report.render path/to/brief.json --out data/reports/test.pdf
-# 走 stdin 也行
 type brief.json | python -m report.render
-# 纯文本模式(推荐 agent/LLM 用这种,免 JSON 转义):正文是普通 markdown 文件
-python -m report.render --title "标题" --content-file brief.md --out data/reports/test.pdf
 ```
 
 输出文件在 `data/reports/`,微信里点开即看;失败 stdout 是 `{"error": "..."}` 不 traceback。

@@ -1,8 +1,8 @@
 ---
 name: daily-stock-brief
 description: A股行情数据问答与每日观察简报。用户询问任意日期的大盘指数、市场情绪、
-  板块资金流、雪球热榜、7x24快讯、龙虎榜,或要求生成"每日观察简报/研报/日报"时,
-  读本地库(路径见 config.json 的 db_path)生成简洁回答并以 PDF 形式交付。
+  板块资金流、雪球热榜、7x24快讯、龙虎榜时,读本地库(路径见 config.json 的 db_path)
+  直接用纯文本回答;只有要求生成"每日观察简报/研报/日报/复盘"这类完整简报时,才以 PDF 形式交付。
   用户点名"今天"且行情未收盘/无数据时,先按需补拉一次行情再作答。定时任务(每日盘后)
   用同一技能生成日报并交付(走 hermes 投递 PDF 文件,见下方「最终回复」契约)。
 ---
@@ -12,7 +12,11 @@ description: A股行情数据问答与每日观察简报。用户询问任意日
 工作目录即 stock-watch 仓库根目录。数据大部分已由 cron 抓取入库,本 skill 以读为主;
 唯一例外是用户点名"今天"且行情未收盘/无数据时,补拉一次行情(见下)。
 
-> **铁律(优先级最高,覆盖本文件其余一切):整个流程只有三步——第 1 步执行下方唯一的读数据命令,第 2 步把正文 markdown 普通写进一个文本文件后调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:<pdf 绝对路径>`(标签独占一行、行首就是 `MEDIA:`)。除此之外什么都不做:不要验证数据、**禁止任何形式的代码执行(`python -c`、`execute_code`、或写并运行任何 `.py` 脚本)**、不要跑测试、不要探查表结构、不要比较文件、不要解释过程、最终回复除那一句话说明 + MEDIA 行外不加任何文字(恰好两行、不许状态汇报)。代码执行需人工审批,cron 无人值守时会卡住任务——正文只需普通写文件就能完成,没有任何理由要用代码执行。唯一的例外:用户点名"今天"且行情未收盘/无数据时,先执行一次「按需补拉」(见下方小节),再重读、再渲、再输出 MEDIA。**
+> **铁律(优先级最高,覆盖本文件其余一切):完整简报走三步——第 1 步执行下方唯一的读数据命令,第 2 步把正文 markdown 普通写进一个文本文件后调 `python -m report.render` 渲成 PDF,第 3 步最终回复 = 只有 `MEDIA:<pdf 绝对路径>` 这一行(行首就是 `MEDIA:`,不加任何说明文字)。除此之外什么都不做:不要验证数据、**禁止任何形式的代码执行(`python -c`、`execute_code`、或写并运行任何 `.py` 脚本)**、不要跑测试、不要探查表结构、不要比较文件、不要解释过程。代码执行需人工审批,cron 无人值守时会卡住任务——正文只需普通写文件就能完成,没有任何理由要用代码执行。唯一的例外:用户点名"今天"且行情未收盘/无数据时,先执行一次「按需补拉」(见下方小节),再重读、再渲、再输出 MEDIA。**
+>
+> **交付形式铁律(同样覆盖全文):只有「完整简报」才出 PDF,其余一律回纯文本。**
+> - **完整简报**(用户说简报/日报/研报/复盘/观察,或定时任务触发)→ 生成/复用 PDF,最终回复只有 `MEDIA:` 一行。
+> - **单项查询**(大盘指数、龙虎榜、板块资金流、热榜、快讯、"今天涨了没"等)→ **绝不渲 PDF、绝不输出 MEDIA**,直接用文本回答。
 >
 > **禁止「预探测」:** 不得用 `python -c` 探 `sys.executable` / `import` / 依赖是否齐全 / Python 版本 / 任何环境信息。`python -m report.reader` 与 `python -m report.render` 均为已验证可执行的命令,直接走流程即可;真出 ImportError,把缺包信息原文转述给用户,任务结束。
 
@@ -74,7 +78,7 @@ python -m report.reader [--date 符号] [--groups 块1,块2,...] [--size 组:N] 
 
 ## 流程
 
-### 0. 快路径:已生成的 PDF 直接发(命中即结束)
+### 0. 快路径:已生成且数据完整的 PDF 直接发(命中即结束)
 
 **启用条件:用户消息中明确出现「完整简报」类关键词**。命中其一即可:
 
@@ -82,22 +86,22 @@ python -m report.reader [--date 符号] [--groups 块1,块2,...] [--size 组:N] 
 - "再来一份" / "再发一次" / "昨天那份" / "昨天发的"
 
 **典型命中**:"给我昨日简报" / "今日 A 股复盘" / "8/27 那份日报再发一下"。
-**典型不命中**(走下方完整流程回文本,不要发整份 PDF):
+**典型不命中**(走下方完整流程回文本,不发整份 PDF):
 "今日大盘" / "今天涨了没" / "昨日板块资金流" / "今日龙虎榜" / "今天热榜" / 任何点名某块数据的查询。
 
 **只适用于用户询问触发的场景**。
 **不适用于定时任务**——cron 触发必须走完整流程,以保证数据是最新的。
 
-```bash
-ls -t data/reports/<YYYYMMDD>-*.pdf 2>/dev/null | head -1
+```
+python -m report.find --date <YYYYMMDD>
 ```
 
 - **`<YYYYMMDD>` 怎么取**:`今日` = 今天的 `YYYYMMDD`;`昨日` = 昨天的 `YYYYMMDD`;具体日期(8/27 / 8月15号)= 换成对应 `YYYYMMDD`。
-- **有一个匹配路径** → 直接回复两行:第 1 行 `A 股观察简报已生成，请查收。`,第 2 行 `MEDIA:<那个路径>`(MEDIA 独占第 2 行),**任务结束,不要走 1~3 步**。
-- **没有任何匹配** → 进入下方 1~3 步完整流程。
-- 多个匹配时取 `ls -t` 第一个(按 mtime 倒序的最新一份),命名冲突场景(盘中手动覆盖)取最新落盘的那份。
-
-**快路径的隐含前提:** PDF 是 `<YYYYMMDD>-<title>.pdf` 格式(同 `report.render` 输出),是上一次 cron 或询问的产物;不要把临时半成品 / 其他模块的 PDF 当成简报用——文件名前缀必须是用户问的那个 `YYYYMMDD`。
+- 输出纯 JSON:`{"exists": bool, "reusable": bool, "path": "...", "mtime_bj": "..."}`。
+- **`reusable: true`** → 直接回复 `MEDIA:<path 字段的值>` 这一行(不加任何文字),**任务结束,不要走 1~3 步**。
+- **`reusable: false` 或 `exists: false`** → 进入下方 1~3 步完整流程重新生成。
+- **不要自己判断文件时间**。`reusable` 已经把"这份 PDF 是盘中快照版还是收盘完整版"算好了,只看这个布尔值。
+- 命令输出 `error` 字段 → 当作没找到,走完整流程。
 
 ### 1. 判断用户要什么(分档细度)
 
@@ -137,7 +141,7 @@ ls -t data/reports/<YYYYMMDD>-*.pdf 2>/dev/null | head -1
 
 ## 最终回复:硬约束(走 PDF 投递)
 
-**最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:<pdf 绝对路径>`(标签独占一行),** Hermes cron 会自动把 PDF 作为附件投递到微信(iLink 文件通道,不受 5/min sendmessage 限流)。**违反以下任一条即为任务失败。**
+**最终回复 = 只有 `MEDIA:<pdf 绝对路径>` 这一行(不加任何说明文字),** Hermes cron 会自动把 PDF 作为附件投递到微信。**违反以下任一条即为任务失败。**
 
 ### 三步执行
 
@@ -154,31 +158,30 @@ python -m report.reader [--date 符号] [--groups ...]
 按上方「3. 生成回答」小节的结构,把正文 markdown 原样写进一个普通文本文件 `brief.md`(普通写文件即可,**不需要任何转义**、不需要拼 JSON),然后执行:
 
 ```
-python -m report.render --title "<标题>" --content-file brief.md --out data/reports/<YYYYMMDD>-<title>.pdf
+python -m report.render --title "A 股观察简报 · YYYY-MM-DD" --content-file brief.md --out data/reports/<YYYYMMDD>-A股观察简报.pdf
 ```
 
+- **标题与文件名全局固定,不准自拟**:`--title` 固定为 `A 股观察简报 · YYYY-MM-DD`,`--out` 固定为 `data/reports/<YYYYMMDD>-A股观察简报.pdf`。其中日期一律用 **reader 返回的 `date` 字段**(实际数据日期),**不是**用户说的"昨天/今天/本周一"。这样同一天无论怎么问都只会有一份 PDF,重复生成直接覆盖。
 - **硬规定:正文只能用普通写文件方式写进 `brief.md`,禁止用任何形式的代码执行(`python -c`、`execute_code`、或写并运行任何 `.py` 脚本)来生成这个文件。** 旧契约是 `{title,content}` JSON,需要对正文做 JSON 转义(换行变 `\n`、引号转义等),这一步容易驱使去用 Python 代码来拼转义,而代码执行需人工审批、cron 无人值守时会卡住。现在的 `--content-file` 模式正文是原始 markdown 文本(不经 JSON 解析),普通写文件就能完成,没有理由再用代码执行。
-- `--out` 必须给**绝对路径**或仓库根目录下的相对路径(Hermes 的 MEDIA 标签必须能解析到磁盘文件)
 - 成功时 `report.render` 在 stdout 输出 `{"ok": true, "path": "..."}`,从 `path` 字段取 PDF 绝对路径
 - 失败时 stdout 是 `{"error": "..."}`,把错误原样转述给用户,任务即结束
 
 **第 3 步:最终回复**
 
-你的最终回复必须是**且仅是**两行:第 1 行一句话说明,第 2 行以 `MEDIA:` 开头的标签(独占一行)。无 markdown 围栏、说明只许一句、恰好两行、不许其他前后缀:
+你的最终回复必须是**且仅是** `MEDIA:` 开头的那一行。无 markdown 围栏、无说明文字、无前后缀:
 
 ```
-A 股观察简报已生成，请查收。
-MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-今日A股观察.pdf
+MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-A股观察简报.pdf
 ```
 
 ### 行为约束
 
 1. **三步顺序不可乱**:先 reader → 再 render → 最后 MEDIA。**禁止任何形式的代码执行**(`python -c`、`execute_code`、或写并运行任何 `.py` 脚本)来生成 `brief.md` 或 PDF。
-2. **`--title` 参数**:PDF 首页标题与文件名(自动加日期戳)的来源,必填非空字符串。
+2. **`--title` 参数**:固定为 `A 股观察简报 · YYYY-MM-DD`(日期取 reader 返回的 `date`),不准按用户措辞改成"昨日/今日/每日"。
 3. **`brief.md` 正文**:markdown 文本(必填非空)。允许 `#`/`##`/`###` 多级标题、`**加粗**`、`-` 列表、`|` 表格、`> ` 引用、` ``` ` 代码块、段落空行分隔。**不设字符硬限**。`render` 会把 `--content-file` 对应的 markdown 文本原样渲染成 PDF 内容。
-4. **路径中的中英文/空格**:`--out` 给的路径里若 title 含中文或特殊字符,会经 `report.render` 自动清洗;LLM 不用手工 URL-encode。
+4. **路径中的中英文/空格**:`--out` 固定模板已含中文,直接原样传即可;LLM 不用手工 URL-encode。
 5. **禁止一切验证行为**:不创建 / 删除临时脚本(除了 `brief.md` 这个 renderer 的输入)、不写任何 `.py` 文件、不跑 `python -c` / `execute_code`、不跑测试套件、不比较文件、不检查表结构、不报 PASS/FAIL。某块数据缺失或 `error` 时,先按"按需补拉"判定是否补拉,其余直接转述,不调试。
-6. **最终回复 = 恰好两行:第 1 行一句话说明,第 2 行 `MEDIA:` 标签(独占一行、行首就是 `MEDIA:`)**。说明固定为「A 股观察简报已生成，请查收。」(不加「每日/今日/昨日」等日期词,避免与实际交付日期不符),除这句 + MEDIA 行外不补任何说明、元信息、状态汇报、错误堆栈。
+6. **最终回复 = 只有 `MEDIA:` 那一行**(行首就是 `MEDIA:`)。**不加任何说明文字**(不要写"已生成、请查收"之类),也不补元信息、状态汇报、错误堆栈。
 7. **不出现工具词**:任何输出(临时 JSON、stdout 解析、最终回复)里**不要**出现 Hermes / cron / skill / report.reader / market snapshot / 命令行 / 投递 / 渠道 / iLink / sendmessage 等词。
 8. **业务措辞规则**(原"完整简报结构"的要求全部保留,落到 `brief.md` 正文里):
    - 不搬运原文,只出加工结论
@@ -191,14 +194,13 @@ MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-今日A股观察.p
 
 LLM 内部动作(用户看不到):
 
-1. `python -m report.reader` → stdout 拿到 JSON
+1. `python -m report.reader` → stdout 拿到 JSON(假设 `date` 是 20260828)
 2. 把行情摘要组织成 markdown 正文,普通写文件写进 `brief.md`(不需转义)
-3. `python -m report.render --title "每日 A 股观察 · 2026-08-28" --content-file brief.md --out data/reports/20260828-今日A股观察.pdf`
+3. `python -m report.render --title "A 股观察简报 · 2026-08-28" --content-file brief.md --out data/reports/20260828-A股观察简报.pdf`
 4. 取 stdout 的 `path` 字段
 
-LLM 最终回复(用户看到的,恰好两行):
+LLM 最终回复(用户看到的,只有这一行):
 
 ```
-A 股观察简报已生成，请查收。
-MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-今日A股观察.pdf
+MEDIA:C:\Users\MyAi\project\stock-watch\data\reports\20260828-A股观察简报.pdf
 ```

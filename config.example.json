@@ -30,5 +30,8 @@
     "top_n": 40
   },
 
+  "report_reuse_after": "18:10",
+  "_comment_report_reuse_after": "仅对【A 股观察简报】生效:当天几点后生成的简报 PDF 算「数据完整版」、可被快路径直接复用(HH:MM)。取 daily cron 时间 18:10 而非 15:35 收盘口径:实测 15:35 时部分数据源尚未同步完。若发现数据源变慢,调大此值。博主策略提炼等其他 PDF 不读此值。",
+
   "log_dir": "logs"
 }
