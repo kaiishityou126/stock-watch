@@ -40,6 +40,10 @@ class TestIsReusable(unittest.TestCase):
         # 盘中 14:00 生成的快照版,数据不全
         self.assertFalse(find.is_reusable("20260902", datetime(2026, 9, 2, 14, 0)))
 
+    def test_same_day_one_minute_before_threshold_not_reusable(self) -> None:
+        # 18:09 紧贴阈值下沿:锁死 >= 不被写成 >(off-by-one 会让这条误判可复用)
+        self.assertFalse(find.is_reusable("20260902", datetime(2026, 9, 2, 18, 9)))
+
     def test_custom_threshold(self) -> None:
         self.assertFalse(find.is_reusable("20260902", datetime(2026, 9, 2, 18, 30), "19:00"))
         self.assertTrue(find.is_reusable("20260902", datetime(2026, 9, 2, 19, 5), "19:00"))
@@ -60,6 +64,14 @@ class TestFindReport(unittest.TestCase):
 
     def test_missing_file(self) -> None:
         out = find.find_report("20260902", reports_dir=str(self.dir))
+        self.assertFalse(out["exists"])
+        self.assertFalse(out["reusable"])
+        self.assertIsNone(out["path"])
+
+    def test_dir_missing(self) -> None:
+        # 目录不存在时 is_file() 为 False,自然走 exists:false,不该抛异常
+        missing = self.dir / "no-such-subdir"
+        out = find.find_report("20260902", reports_dir=str(missing))
         self.assertFalse(out["exists"])
         self.assertFalse(out["reusable"])
         self.assertIsNone(out["path"])
