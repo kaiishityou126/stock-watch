@@ -383,6 +383,36 @@ def _stale_today(data: dict, groups: Sequence[str], auto_date: bool) -> bool:
     return not d or d < _today_str()
 
 
+def read_json(
+    db_path: str,
+    groups: Sequence[str],
+    trade_date: Optional[str],
+    size: dict,
+    auto_date: bool,
+    lookback: int = 24,
+    post_uids: Optional[Sequence[str]] = None,
+    post_limit: int = 200,
+) -> dict:
+    """collect + 今日回退标记 + 板块切组 + 各块按 size 截断,返回最终 dict。
+
+    reader.main() 与 report.plan 共用:main 再套未来/无数据守卫,plan 自行决策。
+    """
+    data = collect(db_path, lookback_hours=lookback, trade_date=trade_date,
+                   groups=groups, post_uids=post_uids, post_limit=post_limit)
+    if _stale_today(data, groups, auto_date):
+        data["is_today_data"] = False
+    if "sectors" in groups:
+        n = size.get("sectors", SCENARIOS[DEFAULT_SCENARIO]["sectors"])
+        data["sectors"] = _split_sectors(data.get("sectors", []), n)
+    for key, group in (("indexes", "index"), ("xq_hot_rank_today", "hot_rank"),
+                       ("xq_hot_rank_prev", "hot_rank"), ("xq_livenews", "livenews"),
+                       ("dragon_tiger", "dragon")):
+        n = size.get(group)
+        if n and isinstance(data.get(key), list):
+            data[key] = data[key][:n]
+    return data
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="A股舆情简报数据读取(只读,输出纯 JSON)")
     parser.add_argument("--date", default=None, help="today/yesterday/N-days-ago/last-tue/this-mon/YYYYMMDD;缺省自动取最近交易日")
@@ -444,32 +474,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not post_uids:
             return fail(f"{args.config} 未配置 bloggers(uid),无法读取博主博文")
 
-    data = collect(
-        db_path,
-        lookback_hours=args.lookback,
-        trade_date=resolved_str,
-        groups=groups,
-        post_uids=post_uids,
+    # collect + 今日回退标记 + 切组 + 截断(与 report.plan 共用同一处理)
+    data = read_json(
+        db_path, groups, resolved_str, size,
+        auto_date=args.date is None, lookback=args.lookback, post_uids=post_uids,
         post_limit=size.get(POST_GROUP, SCENARIOS[args.scenario][POST_GROUP]),
     )
-
-    # 自动取日期且库里没有今天数据(请求了行情腿)→ 显式标记,让下游决定补拉
-    # 而非拿回退到的旧日期数据冒充当天(点名历史日期不标记)
-    if _stale_today(data, groups, args.date is None):
-        data["is_today_data"] = False
-
-    # 板块切成 4 组(领涨/领跌/主力净流入/净流出)——collect 只按 pct_change 排序取全量,切组在 CLI
-    if "sectors" in groups:
-        n = size.get("sectors", SCENARIOS[args.scenario]["sectors"])
-        data["sectors"] = _split_sectors(data.get("sectors", []), n)
-
-    # 其余列表块按 size 截断(collect 已按各自口径排序,截前 N 即可)
-    for key, group in (("indexes", "index"), ("xq_hot_rank_today", "hot_rank"),
-                       ("xq_hot_rank_prev", "hot_rank"), ("xq_livenews", "livenews"),
-                       ("dragon_tiger", "dragon")):
-        n = size.get(group)
-        if n and isinstance(data.get(key), list):
-            data[key] = data[key][:n]
 
     # 精确指定日期且无任何数据 → 报告无数据,不静默换日期
     if args.date is not None and not _has_any_data(data):
