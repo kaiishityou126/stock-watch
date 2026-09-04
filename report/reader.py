@@ -319,14 +319,21 @@ def _has_any_data(data: dict) -> bool:
 
 
 def _split_sectors(sectors: list[dict], n: int) -> dict[str, list[dict]]:
-    """板块切成 4 组:领涨/领跌/主力净流入/净流出,各取前 n。"""
+    """板块切成 4 组:领涨/领跌/主力净流入/净流出,各取前 n。
+
+    排序键为 None 的板块(该指标缺失)不参与对应排名——否则全 None 时
+    稳定排序会让领涨/领跌取到同一批,LLM 据此写出重复无意义的结论。
+    """
     if not sectors:
         return {"gainers": [], "losers": [], "inflow": [], "outflow": []}
-    gainers = sorted(sectors, key=lambda r: r["pct_change"] or 0, reverse=True)[:n]
-    losers = sorted(sectors, key=lambda r: r["pct_change"] or 0)[:n]
-    inflow = sorted(sectors, key=lambda r: r["main_net_inflow_est"] or 0, reverse=True)[:n]
-    outflow = sorted(sectors, key=lambda r: r["main_net_inflow_est"] or 0)[:n]
-    return {"gainers": gainers, "losers": losers, "inflow": inflow, "outflow": outflow}
+    by_pct = [r for r in sectors if r["pct_change"] is not None]
+    by_net = [r for r in sectors if r["main_net_inflow_est"] is not None]
+    return {
+        "gainers": sorted(by_pct, key=lambda r: r["pct_change"], reverse=True)[:n],
+        "losers": sorted(by_pct, key=lambda r: r["pct_change"])[:n],
+        "inflow": sorted(by_net, key=lambda r: r["main_net_inflow_est"], reverse=True)[:n],
+        "outflow": sorted(by_net, key=lambda r: r["main_net_inflow_est"])[:n],
+    }
 
 
 def _config_db_path(config_path: str) -> str | None:

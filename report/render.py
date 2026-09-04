@@ -77,10 +77,11 @@ except ImportError:  # pragma: no cover
     cm = None  # type: ignore
     ParagraphStyle = None  # type: ignore
 
-# Windows 中文字体候选。**只接受真 ttf,不要 ttc**。xhtml2pdf 之前踩的坑:
-# .ttc 是字体集合(微软雅黑 = Regular/Bold/Light 等多个子字体),TTFont 加载
-# 时不传 subfontIndex 会选错子字体,中文就方块。simhei.ttf 是 9.7MB 的
-# 单 ttf,Windows 自带,稳。
+# 中文字体候选。Windows 优先真 ttf(simhei.ttf,9.7MB 单 ttf、自带、最稳):
+# .ttc 是字体集合(微软雅黑 = Regular/Bold/Light 多个子字体),Windows 上用
+# msyh.ttc 这类曾踩坑——TTFont 不传 subfontIndex 会选错子字体、中文变方块。
+# 非 Windows 无对应单 ttf,只能用系统 ttc(mac PingFang / Linux Noto、文泉驿),
+# 交给 reportlab 默认取子字体 0(Regular),这些平台实测正常。
 _DEFAULT_FONT_CANDIDATES = (
     r"C:\Windows\Fonts\simhei.ttf",   # 真 ttf,Windows 优先
     r"C:\Windows\Fonts\msyh.ttf",     # 少数 Win10 才有,fallback
@@ -188,39 +189,29 @@ def _md_to_html(content: str) -> str:
 
 
 def _render_inline(text: str) -> str:
-    """把 HTML 内联标签(**bold**/*italic*/`code`)转成 reportlab Paragraph
-    能认的 <b>/<i>/<font> 子标签;同时做 HTML escape 防止注入。
+    """把 markdown 生成的内联标签(<strong>/<em>/<code>/<a>)翻译成 reportlab
+    Paragraph 认的 <b>/<i>/<font> 子标签。文本节点的转义由 BS4 序列化负责。
+
+    只在 BeautifulSoup 可用时被调用(唯一调用方 _para/_render_table 都在
+    _html_to_flowables 的 BS4 分支内),故不再保留无 BS4 的兜底分支。
     """
-    if BeautifulSoup is not None:
-        # 先 escape,再让 BS4 把 markdown 生成的 <strong>/<em>/<code> 重新放回
-        # 但 BS4 解码后 .get_text() 会把已有标签去掉——我们用更稳的办法:
-        # 假设上游 _md_to_html 已经把 ** 变成 <strong>, * 变成 <em>, ` 变成 <code>,
-        # reportlab Paragraph 也认 <b>/<i>/<font>,所以只需把 strong/em/code
-        # 翻译成 reportlab 标签。escape 由 Paragraph 自己处理(它接受原文,
-        # 但内联标签字符串里如果有 < > 需要先 escape 再插标签)。
-        soup = BeautifulSoup(text, "html.parser")
-        for tag in soup.find_all(["strong", "b"]):
-            tag.name = "b"
-        for tag in soup.find_all(["em", "i"]):
-            tag.name = "i"
-        for tag in soup.find_all("code"):
-            tag.name = "font"
-            tag.attrs["color"] = "#c7254e"
-            tag.attrs["backColor"] = "#f9f2f4"
-        for tag in soup.find_all("a"):
-            # 简单把链接渲染成 "文字 (href)"
-            href = tag.get("href", "")
-            text_only = tag.get_text()
-            tag.string = f'{text_only} ({href})'
-            tag.name = "font"
-            tag.attrs = {"color": "#1e6bb8"}
-        return str(soup)
-    # 无 BS4:兜底只 escape + 简单标签翻译
-    s = escape(text)
-    s = re.sub(r"<(strong|b)>(.*?)</\1>", r"<b>\2</b>", s, flags=re.DOTALL)
-    s = re.sub(r"<(em|i)>(.*?)</\1>", r"<i>\2</i>", s, flags=re.DOTALL)
-    s = re.sub(r"<code>(.*?)</code>", r'<font color="#c7254e" backColor="#f9f2f4">\1</font>', s, flags=re.DOTALL)
-    return s
+    soup = BeautifulSoup(text, "html.parser")
+    for tag in soup.find_all(["strong", "b"]):
+        tag.name = "b"
+    for tag in soup.find_all(["em", "i"]):
+        tag.name = "i"
+    for tag in soup.find_all("code"):
+        tag.name = "font"
+        tag.attrs["color"] = "#c7254e"
+        tag.attrs["backColor"] = "#f9f2f4"
+    for tag in soup.find_all("a"):
+        # 简单把链接渲染成 "文字 (href)"
+        href = tag.get("href", "")
+        text_only = tag.get_text()
+        tag.string = f'{text_only} ({href})'
+        tag.name = "font"
+        tag.attrs = {"color": "#1e6bb8"}
+    return str(soup)
 
 
 def _html_to_flowables(html: str, styles: dict) -> list:
@@ -259,11 +250,11 @@ def _html_to_flowables(html: str, styles: dict) -> list:
             name = (node.name or "").lower()
             if name == "h1":
                 # 简报里 content 不会真的出现 h1(markdown # ),保险
-                _para(node.get_text(), "h2")
+                _para(str(node.decode_contents()), "h2")
             elif name == "h2":
-                _para(node.get_text(), "h2")
+                _para(str(node.decode_contents()), "h2")
             elif name == "h3":
-                _para(node.get_text(), "h3")
+                _para(str(node.decode_contents()), "h3")
             elif name == "p":
                 _para(str(node.decode_contents()), "body")
                 flowables.append(Spacer(1, 2))
@@ -294,9 +285,9 @@ def _html_to_flowables(html: str, styles: dict) -> list:
                 for child in node.children:
                     _walk(child)
         else:
-            # 文本节点:仅当直接挂在 body 上且非空才当作段落
+            # 文本节点:非空白就当段落(markdown 里块级间多是空白文本,strip 后跳过)
             text = str(node).strip()
-            if text and not flowables:
+            if text:
                 _para(text, "body")
 
     # 顶层 children 逐个走
@@ -309,27 +300,23 @@ def _html_to_flowables(html: str, styles: dict) -> list:
 
 def _render_table(table_node, flowables: list, styles: dict) -> None:
     """把 <table> 转成 reportlab Table。"""
+    # 两种 cell 样式建一次即可(表头 / 普通),不必每格重建
+    header_style = ParagraphStyle(
+        "TblHeader", parent=styles["body"], fontName=_FONT_NAME, fontSize=9,
+        leading=12, textColor=colors.white, backColor=colors.HexColor("#333"),
+    )
+    body_style = ParagraphStyle(
+        "TblCell", parent=styles["body"], fontName=_FONT_NAME, fontSize=9,
+        leading=12, textColor=colors.HexColor("#222"),
+    )
     rows = []
     for tr in table_node.find_all("tr"):
         cells = []
-        for cell in tr.find_all(["th", "td"]):
-            txt = str(cell.decode_contents()).strip()
-            # reportlab Table 单元格里需要 <font> 标签而不是 <strong> 等
-            txt = re.sub(r"<(strong|b)>", "<b>", txt)
-            txt = re.sub(r"</(strong|b)>", "</b>", txt)
-            txt = re.sub(r"<(em|i)>", "<i>", txt)
-            txt = re.sub(r"</(em|i)>", "</i>", txt)
-            # cell style 区分表头/普通
-            is_header = (cell.name == "th")
-            cell_style = ParagraphStyle(
-                "TblHeader" if is_header else "TblCell",
-                parent=styles["body"],
-                fontName=_FONT_NAME,
-                fontSize=9,
-                leading=12,
-                textColor=colors.white if is_header else colors.HexColor("#222"),
-                backColor=colors.HexColor("#333") if is_header else None,
-            )
+        # th/td 是 tr 的直接子节点,recursive=False 防嵌套表格的 cell 混进本行
+        for cell in tr.find_all(["th", "td"], recursive=False):
+            # 与正文走同一套内联处理(strong/em/code/链接),避免单元格漏译 <code> 等
+            txt = _render_inline(str(cell.decode_contents()).strip())
+            cell_style = header_style if cell.name == "th" else body_style
             try:
                 cells.append(Paragraph(txt, cell_style))
             except Exception:
