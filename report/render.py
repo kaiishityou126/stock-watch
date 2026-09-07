@@ -32,6 +32,7 @@ Hermes cron 任务在 LLM 产出内容后调用,把 markdown 文本渲染成 PDF
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -39,43 +40,85 @@ import sys
 from html import escape
 from pathlib import Path
 
-# 容许 stdlib 缺包时延迟报错(让 CLI 给出友好提示而不是 traceback)
-try:
-    import markdown as _md  # type: ignore
-except ImportError:  # pragma: no cover
-    _md = None  # type: ignore
-try:
-    from bs4 import BeautifulSoup  # type: ignore
-except ImportError:  # pragma: no cover
-    BeautifulSoup = None  # type: ignore
-try:
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.pdfmetrics import registerFontFamily
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import (
-        Paragraph,
-        SimpleDocTemplate,
-        Spacer,
-        Table,
-        TableStyle,
-    )
-except ImportError:  # pragma: no cover
-    pdfmetrics = None  # type: ignore
-    registerFontFamily = None  # type: ignore
-    TTFont = None  # type: ignore
-    Paragraph = None  # type: ignore
-    SimpleDocTemplate = None  # type: ignore
-    Spacer = None  # type: ignore
-    Table = None  # type: ignore
-    TableStyle = None  # type: ignore
-    colors = None  # type: ignore
-    A4 = None  # type: ignore
-    cm = None  # type: ignore
-    ParagraphStyle = None  # type: ignore
+# 容许 stdlib 缺包时延迟报错(让 CLI 给出友好提示而不是 traceback)。
+# 每个顶层依赖单独 try,失败时记录**真实模块名 + 真实错误**,绝不遮蔽
+# 间接拉进来的子依赖(典型例子:reportlab 间接拉 PIL,PIL 坏掉时不应
+# 一锅端报"缺 reportlab"——历史经验:这个遮蔽让 Pillow wheel 装坏的问题
+# 在 cron output 里被埋了至少 3 次 8/28、9/3、9/4,真实根因要靠手工翻
+# 三层日志才看见)。
+_import_errors: list[str] = []
+
+
+def _try_import_attr(label: str, module: str, *attrs: str):
+    """importlib.import_module 后取属性,任一步 ImportError 记到 _import_errors,返 None。"""
+    try:
+        mod = importlib.import_module(module)
+    except ImportError as e:  # pragma: no cover
+        # e.name:Python 3.10+ 才有,3.9 为 None
+        bad = getattr(e, "name", None) or "?"
+        _import_errors.append(f"{label} 导入失败:缺/坏模块 {bad} ({e})")
+        return None
+    if not attrs:
+        return mod
+    for a in attrs:
+        if not hasattr(mod, a):
+            _import_errors.append(f"{label} 模块 OK 但缺属性 {a}")
+            return None
+    return tuple(getattr(mod, a) for a in attrs)
+
+
+_md = _try_import_attr("markdown", "markdown")
+# markdown 库用法: md.markdown(text, extensions=[...])。_md 已经是 module。
+BeautifulSoup = None
+_bs4 = _try_import_attr("beautifulsoup4", "bs4", "BeautifulSoup")
+if _bs4 is not None:
+    BeautifulSoup = _bs4[0]
+colors = _try_import_attr("reportlab.lib.colors", "reportlab.lib.colors")
+A4 = None
+_ps = _try_import_attr("reportlab.lib.pagesizes", "reportlab.lib.pagesizes")
+if _ps is not None:
+    A4 = _ps.A4
+ParagraphStyle = None
+_ps_style = _try_import_attr("reportlab.lib.styles", "reportlab.lib.styles", "ParagraphStyle")
+if _ps_style is not None:
+    ParagraphStyle = _ps_style[0]
+cm = None
+_units = _try_import_attr("reportlab.lib.units", "reportlab.lib.units", "cm")
+if _units is not None:
+    cm = _units[0]
+pdfmetrics = None
+# pdfmetrics 实际上是 reportlab.pdfbase.pdfmetrics 这个子模块(importlib 子模块),
+# 通过 from reportlab.pdfbase import pdfmetrics 拿到,所以 _try_import_attr 不适用。
+_pdfmetrics_mod = _try_import_attr("reportlab.pdfbase.pdfmetrics", "reportlab.pdfbase.pdfmetrics")
+if _pdfmetrics_mod is not None:
+    pdfmetrics = _pdfmetrics_mod
+registerFontFamily = None
+_rff = _try_import_attr("reportlab.pdfbase.pdfmetrics", "reportlab.pdfbase.pdfmetrics", "registerFontFamily")
+if _rff is not None:
+    registerFontFamily = _rff[0]
+TTFont = None
+_ttf = _try_import_attr("reportlab.pdfbase.ttfonts", "reportlab.pdfbase.ttfonts", "TTFont")
+if _ttf is not None:
+    TTFont = _ttf[0]
+Paragraph = SimpleDocTemplate = Spacer = Table = TableStyle = None
+_plat = _try_import_attr(
+    "reportlab.platypus",
+    "reportlab.platypus",
+    "Paragraph",
+    "SimpleDocTemplate",
+    "Spacer",
+    "Table",
+    "TableStyle",
+)
+if _plat is not None:
+    Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle = _plat
+
+
+def _missing_dep_error(needed: str) -> ImportError:
+    """构造 ImportError,信息含**真实原因**(_import_errors 里记录的)。"""
+    if _import_errors:
+        return ImportError(f"{needed} 不可用;真实原因 → " + " | ".join(_import_errors))
+    return ImportError(f"{needed} 不可用")
 
 # 中文字体候选。Windows 优先真 ttf(simhei.ttf,9.7MB 单 ttf、自带、最稳):
 # .ttc 是字体集合(微软雅黑 = Regular/Bold/Light 多个子字体),Windows 上用
@@ -115,7 +158,7 @@ def _register_fonts(font_path: str) -> None:
     等宽字体: 尝试用同一个 ttf(中文 ttf 一般含等宽字形),否则 fallback。
     """
     if pdfmetrics is None or TTFont is None:
-        raise ImportError("缺少依赖 reportlab,请 pip install reportlab")
+        raise _missing_dep_error("reportlab")
     if _FONT_NAME not in pdfmetrics.getRegisteredFontNames():
         pdfmetrics.registerFont(TTFont(_FONT_NAME, font_path, subfontIndex=0))
         registerFontFamily(
@@ -181,7 +224,7 @@ def _make_styles() -> dict:
 def _md_to_html(content: str) -> str:
     """把 markdown 文本转成 HTML 字符串(标签树层面),供 BS4 解析。"""
     if _md is None:
-        raise ImportError("缺少依赖 markdown,请 pip install markdown")
+        raise _missing_dep_error("markdown")
     return _md.markdown(
         content,
         extensions=["tables", "fenced_code", "sane_lists", "nl2br"],
@@ -359,11 +402,11 @@ def render_brief(payload: dict, out_path: str | os.PathLike[str]) -> None:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("payload.content 必填,非空字符串")
     if _md is None:
-        raise ImportError("缺少依赖 markdown,请 pip install markdown")
+        raise _missing_dep_error("markdown")
     if BeautifulSoup is None:
-        raise ImportError("缺少依赖 beautifulsoup4,请 pip install beautifulsoup4")
+        raise _missing_dep_error("beautifulsoup4")
     if pdfmetrics is None or SimpleDocTemplate is None:
-        raise ImportError("缺少依赖 reportlab,请 pip install reportlab")
+        raise _missing_dep_error("reportlab")
 
     font_path = _resolve_font_path()
     _register_fonts(font_path)
