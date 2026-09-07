@@ -87,15 +87,15 @@ _units = _try_import_attr("reportlab.lib.units", "reportlab.lib.units", "cm")
 if _units is not None:
     cm = _units[0]
 pdfmetrics = None
-# pdfmetrics 实际上是 reportlab.pdfbase.pdfmetrics 这个子模块(importlib 子模块),
-# 通过 from reportlab.pdfbase import pdfmetrics 拿到,所以 _try_import_attr 不适用。
+registerFontFamily = None
+# pdfmetrics 既要模块本身(当值用),又要它的属性 registerFontFamily——
+# 一次导入两者都拿,避免对同一子模块重复 import、重复记错。
 _pdfmetrics_mod = _try_import_attr("reportlab.pdfbase.pdfmetrics", "reportlab.pdfbase.pdfmetrics")
 if _pdfmetrics_mod is not None:
     pdfmetrics = _pdfmetrics_mod
-registerFontFamily = None
-_rff = _try_import_attr("reportlab.pdfbase.pdfmetrics", "reportlab.pdfbase.pdfmetrics", "registerFontFamily")
-if _rff is not None:
-    registerFontFamily = _rff[0]
+    registerFontFamily = getattr(_pdfmetrics_mod, "registerFontFamily", None)
+    if registerFontFamily is None:
+        _import_errors.append("reportlab.pdfbase.pdfmetrics 缺属性 registerFontFamily")
 TTFont = None
 _ttf = _try_import_attr("reportlab.pdfbase.ttfonts", "reportlab.pdfbase.ttfonts", "TTFont")
 if _ttf is not None:
@@ -115,9 +115,10 @@ if _plat is not None:
 
 
 def _missing_dep_error(needed: str) -> ImportError:
-    """构造 ImportError,信息含**真实原因**(_import_errors 里记录的)。"""
+    """构造 ImportError,信息含**真实原因**(_import_errors 里记录的,去重保序)。"""
     if _import_errors:
-        return ImportError(f"{needed} 不可用;真实原因 → " + " | ".join(_import_errors))
+        uniq = list(dict.fromkeys(_import_errors))
+        return ImportError(f"{needed} 不可用;真实原因 → " + " | ".join(uniq))
     return ImportError(f"{needed} 不可用")
 
 # 中文字体候选。Windows 优先真 ttf(simhei.ttf,9.7MB 单 ttf、自带、最稳):
