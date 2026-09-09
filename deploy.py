@@ -439,8 +439,8 @@ CRON_JOBS = [
     ("stockwatch-weibo", "30 6,9,12,15,21,23 * * *", "script", "stockwatch_weibo.py"),
     ("stockwatch-xueqiu", "20 * * * *", "script", "stockwatch_xueqiu.py"),
     ("stockwatch-market", "0 18 * * 1-5", "script", "stockwatch_market.py"),
-    ("stockwatch-daily", "10 18 * * 1,3,5", "skill", "hermes/skills/daily-stock-brief_skill.md"),
-    ("stockwatch-blogger", "0 20 * * 5", "skill", "hermes/skills/blogger-strategy_skill.md"),
+    ("stockwatch-daily", "10 18 * * 1-5", "skill", "hermes/skills/daily-stock-brief_skill.md"),
+    ("stockwatch-blogger", "0 20 * * 1,3,5", "skill", "hermes/skills/blogger-strategy_skill.md"),
     ("stockwatch-alert", "55 5-23 * * *", "script", "stockwatch_alert.py"),
 ]
 DELIVER_WEIXIN = {"stockwatch-daily", "stockwatch-blogger", "stockwatch-alert"}
